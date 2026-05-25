@@ -32,6 +32,13 @@ func TestIgnoreList_DefaultPatterns(t *testing.T) {
 		{"build/bin/contextshrinker", true},
 		{"target/debug/app", true},
 		{"__pycache__/main.cpython-39.pyc", true},
+		{".venv/lib/python3.9/site-packages/requests/api.py", true},
+		{"venv/bin/pip", true},
+		{".cache/go-build/somehash", true},
+		{"dist/bundle.js", true},
+		{"out/main.exe", true},
+		{".vscode/settings.json", true},
+		{"tmp/data.json", true},
 	}
 
 	for _, tt := range tests {

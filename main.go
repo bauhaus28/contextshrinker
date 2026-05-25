@@ -191,10 +191,11 @@ func main() {
 
 	// MCP Mode: initialize variables for lazy loading
 	var (
-		database   *db.Database
-		lspManager *lsp.LSPManager
-		watcherObj *watcher.Watcher
-		initMu     sync.Mutex
+		database         *db.Database
+		lspManager       *lsp.LSPManager
+		watcherObj       *watcher.Watcher
+		initMu           sync.Mutex
+		mcpServerWrapper *mcp_server.Server
 	)
 
 	// Register defer functions to close resources when main exits
@@ -294,6 +295,9 @@ func main() {
 			return nil, fmt.Errorf("failed to initialize database: %w", err)
 		}
 
+		// Unblock pending tool calls immediately since database is ready to be queried
+		mcpServerWrapper.SetDatabase(database)
+
 		// Initialize LSP Manager
 		lspManager = lsp.NewLSPManager(workspaceRoot)
 
@@ -330,7 +334,6 @@ func main() {
 		return database, nil
 	}
 
-	var mcpServerWrapper *mcp_server.Server
 
 	mcpServerWrapper = mcp_server.NewServer(func(ctx context.Context, req *mcp.InitializedRequest) {
 		log.Println("MCP session initialized, starting background workspace indexing...")

@@ -25,6 +25,16 @@ func NewIgnoreList(rootDir string) (*IgnoreList, error) {
 			"target",
 			".contextshrinker",
 			"contextshrinker_graph.html",
+			".venv",
+			"venv",
+			"env",
+			".env",
+			"dist",
+			"out",
+			".vscode",
+			".idea",
+			".cache",
+			"tmp",
 		},
 	}
 
