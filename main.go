@@ -213,7 +213,7 @@ func main() {
 		}
 	}()
 
-	lazyInit := func(ctx context.Context, session *mcp.ServerSession) (*db.Database, error) {
+	lazyInit := func(_ context.Context, session *mcp.ServerSession) (*db.Database, error) {
 		initMu.Lock()
 		defer initMu.Unlock()
 
