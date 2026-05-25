@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -219,10 +220,12 @@ func main() {
 			return database, nil
 		}
 
-		// Retrieve workspace root from client session roots
-		rootsRes, err := session.ListRoots(ctx, nil)
+		// Retrieve workspace root from client session roots using a timeout to prevent deadlocks
+		listCtx, listCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rootsRes, err := session.ListRoots(listCtx, nil)
+		listCancel()
 		if err != nil {
-			log.Printf("Failed to list client roots: %v", err)
+			log.Printf("Failed to list client roots (using timeout context): %v", err)
 		}
 
 		workspaceRoot := ""
@@ -257,6 +260,16 @@ func main() {
 			}
 		} else if err == nil && !info.IsDir() {
 			return nil, fmt.Errorf("path .contextshrinker exists but is not a directory")
+		}
+
+		// Set up log file duplication to .contextshrinker/server.log so the user can see logs
+		logFilePath := filepath.Join(schwobDir, "server.log")
+		logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+			log.Printf("--- Server session started: CWD=%s Workspace=%s ---", func() string { dir, _ := os.Getwd(); return dir }(), workspaceRoot)
+		} else {
+			log.Printf("Failed to open server log file %s: %v", logFilePath, err)
 		}
 
 		dbPath := *dbPathFlag
