@@ -1,0 +1,17 @@
+# Binaries
+contextshrinker
+
+# Local configuration and graph databases
+.contextshrinker/
+
+# Temporary test directories
+test_temp_workspace/
+test_db_integration/
+
+# Generated graph visualizations
+contextshrinker_graph.html
+
+# Go standard ignore patterns
+*.out
+*.test
+*.prof
