@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"contextshrinker/internal/db"
+	"github.com/bauhaus28/contextshrinker/internal/db"
 )
 
 type HealthAudit struct {

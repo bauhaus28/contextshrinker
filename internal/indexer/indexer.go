@@ -11,10 +11,10 @@ import (
 	"strings"
 	"sync"
 
-	"contextshrinker/internal/db"
-	"contextshrinker/internal/ignore"
-	"contextshrinker/internal/lsp"
-	"contextshrinker/internal/parser"
+	"github.com/bauhaus28/contextshrinker/internal/db"
+	"github.com/bauhaus28/contextshrinker/internal/ignore"
+	"github.com/bauhaus28/contextshrinker/internal/lsp"
+	"github.com/bauhaus28/contextshrinker/internal/parser"
 )
 
 type Indexer struct {

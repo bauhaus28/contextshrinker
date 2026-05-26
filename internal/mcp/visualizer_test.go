@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"contextshrinker/internal/db"
+	"github.com/bauhaus28/contextshrinker/internal/db"
 )
 
 func TestGenerateGraphHTML(t *testing.T) {

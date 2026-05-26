@@ -1,4 +1,4 @@
-module contextshrinker
+module github.com/bauhaus28/contextshrinker
 
 go 1.25.0
 

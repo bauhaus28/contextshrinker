@@ -12,12 +12,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"contextshrinker/internal/db"
-	"contextshrinker/internal/ignore"
-	"contextshrinker/internal/indexer"
-	"contextshrinker/internal/lsp"
-	mcp_server "contextshrinker/internal/mcp"
-	"contextshrinker/internal/watcher"
+	"github.com/bauhaus28/contextshrinker/internal/db"
+	"github.com/bauhaus28/contextshrinker/internal/ignore"
+	"github.com/bauhaus28/contextshrinker/internal/indexer"
+	"github.com/bauhaus28/contextshrinker/internal/lsp"
+	mcp_server "github.com/bauhaus28/contextshrinker/internal/mcp"
+	"github.com/bauhaus28/contextshrinker/internal/watcher"
 )
 
 func main() {

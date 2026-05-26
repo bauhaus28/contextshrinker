@@ -15,7 +15,7 @@ import (
 	"github.com/smacker/go-tree-sitter/python"
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 
-	"contextshrinker/internal/db"
+	"github.com/bauhaus28/contextshrinker/internal/db"
 )
 
 type ParsedResult struct {

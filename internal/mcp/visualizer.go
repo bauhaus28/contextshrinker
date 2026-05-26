@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"contextshrinker/internal/db"
+	"github.com/bauhaus28/contextshrinker/internal/db"
 )
 
 // GenerateGraphHTML creates a self-contained, interactive HTML visualization of the codebase graph.

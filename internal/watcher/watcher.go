@@ -10,7 +10,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"contextshrinker/internal/ignore"
+	"github.com/bauhaus28/contextshrinker/internal/ignore"
 )
 
 type Watcher struct {

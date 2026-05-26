@@ -8,8 +8,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"contextshrinker/internal/db"
-	"contextshrinker/internal/report"
+	"github.com/bauhaus28/contextshrinker/internal/db"
+	"github.com/bauhaus28/contextshrinker/internal/report"
 )
 
 type Server struct {

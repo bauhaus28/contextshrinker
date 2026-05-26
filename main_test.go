@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"contextshrinker/internal/db"
-	"contextshrinker/internal/ignore"
-	"contextshrinker/internal/indexer"
-	"contextshrinker/internal/lsp"
+	"github.com/bauhaus28/contextshrinker/internal/db"
+	"github.com/bauhaus28/contextshrinker/internal/ignore"
+	"github.com/bauhaus28/contextshrinker/internal/indexer"
+	"github.com/bauhaus28/contextshrinker/internal/lsp"
 )
 
 func TestIntegration_ContextShrinkerIndexer(t *testing.T) {
