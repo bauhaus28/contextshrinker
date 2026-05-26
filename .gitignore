@@ -20,3 +20,6 @@ contextshrinker_graph.html
 contextshrinker-report.md
 implementation-plan.md
 specification.md
+
+# Claude configs 
+.claude/
