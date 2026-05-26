@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="contextshrinker logo" width="350" />
+</p>
+
 # contextshrinker
 
 **contextshrinker** is a zero-dependency, headless Model Context Protocol (MCP) server written in Go. It indexes local codebases into an embedded Kùzu graph database to drastically reduce LLM token bloat for autonomous AI agents (such as Claude Code, Cursor, Antigravity IDE, Aider, and Claude Desktop).
