@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goarch: amd64
+            goos: linux
+            binary_name: contextshrinker
+            library_file: libkuzu.so
+            kuzu_src_path: lib/dynamic/linux-amd64/libkuzu.so
+            archive_name: contextshrinker-linux-amd64.tar.gz
+            ldflags: "-extldflags '-Wl,-rpath,\\$ORIGIN'"
+          - os: macos-13
+            goarch: amd64
+            goos: darwin
+            binary_name: contextshrinker
+            library_file: libkuzu.dylib
+            kuzu_src_path: lib/dynamic/darwin/libkuzu.dylib
+            archive_name: contextshrinker-darwin-amd64.tar.gz
+            ldflags: "-extldflags '-Wl,-rpath,@executable_path'"
+          - os: macos-latest
+            goarch: arm64
+            goos: darwin
+            binary_name: contextshrinker
+            library_file: libkuzu.dylib
+            kuzu_src_path: lib/dynamic/darwin/libkuzu.dylib
+            archive_name: contextshrinker-darwin-arm64.tar.gz
+            ldflags: "-extldflags '-Wl,-rpath,@executable_path'"
+          - os: windows-latest
+            goarch: amd64
+            goos: windows
+            binary_name: contextshrinker.exe
+            library_file: kuzu_shared.dll
+            kuzu_src_path: lib/dynamic/windows/kuzu_shared.dll
+            archive_name: contextshrinker-windows-amd64.zip
+            ldflags: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Setup MinGW (Windows only)
+        if: matrix.os == 'windows-latest'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Add MSYS2 UCRT64 to PATH (Windows only)
+        if: matrix.os == 'windows-latest'
+        run: echo "C:\msys64\ucrt64\bin" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Build Binary
+        env:
+          CGO_ENABLED: 1
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -ldflags="${{ matrix.ldflags }} -s -w" -o ${{ matrix.binary_name }} .
+        shell: bash
+
+      - name: Locate and Copy Kuzu Library
+        run: |
+          KUZU_DIR=$(go list -f '{{.Dir}}' github.com/kuzudb/go-kuzu)
+          cp "$KUZU_DIR/${{ matrix.kuzu_src_path }}" .
+        shell: bash
+
+      - name: Package Release Asset (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          7z a ${{ matrix.archive_name }} ${{ matrix.binary_name }} ${{ matrix.library_file }}
+        shell: bash
+
+      - name: Package Release Asset (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          tar -czvf ${{ matrix.archive_name }} ${{ matrix.binary_name }} ${{ matrix.library_file }}
+        shell: bash
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive_name }}
+          path: ${{ matrix.archive_name }}
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List Artifacts
+        run: ls -R artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/contextshrinker-linux-amd64.tar.gz
+            artifacts/contextshrinker-darwin-amd64.tar.gz
+            artifacts/contextshrinker-darwin-arm64.tar.gz
+            artifacts/contextshrinker-windows-amd64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
