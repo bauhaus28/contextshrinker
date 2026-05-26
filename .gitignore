@@ -15,3 +15,8 @@ contextshrinker_graph.html
 *.out
 *.test
 *.prof
+
+# Generated reports and specifications
+contextshrinker-report.md
+implementation-plan.md
+specification.md

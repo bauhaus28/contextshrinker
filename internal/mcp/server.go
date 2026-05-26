@@ -9,14 +9,18 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"contextshrinker/internal/db"
+	"contextshrinker/internal/report"
 )
 
 type Server struct {
-	mcpServer *mcp.Server
-	database  *db.Database
-	initDone  chan struct{}
-	initOnce  sync.Once
+	mcpServer     *mcp.Server
+	database      *db.Database
+	workspaceRoot string
+	initDone      chan struct{}
+	initOnce      sync.Once
 }
+
+type GetArchitectureReportArgs struct{}
 
 type SearchArgs struct {
 	Query string `json:"query" jsonschema:"The substring to match against names and docstrings of codebase entities."`
@@ -54,9 +58,10 @@ func (s *Server) GetMCPServer() *mcp.Server {
 }
 
 // SetDatabase sets the initialized database connection and unblocks pending tool calls.
-func (s *Server) SetDatabase(database *db.Database) {
+func (s *Server) SetDatabase(database *db.Database, workspaceRoot string) {
 	s.initOnce.Do(func() {
 		s.database = database
+		s.workspaceRoot = workspaceRoot
 		close(s.initDone)
 	})
 }
@@ -171,7 +176,12 @@ func (s *Server) registerTools() {
 			return nil, nil, fmt.Errorf("failed to export graph data: %w", err)
 		}
 
-		path, err := GenerateGraphHTML(args.WorkspaceRoot, nodes, edges)
+		wRoot := args.WorkspaceRoot
+		if wRoot == "" {
+			wRoot = s.workspaceRoot
+		}
+
+		path, err := GenerateGraphHTML(wRoot, nodes, edges)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to generate HTML file: %w", err)
 		}
@@ -192,8 +202,31 @@ func (s *Server) registerTools() {
 			},
 		}, nil, nil
 	})
+
+	// 5. get_architecture_report
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "get_architecture_report",
+		Description: "Retrieve the codebase architectural health report containing metrics on God Objects, coupling hotspots, cycles, and dead unexported functions.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args GetArchitectureReportArgs) (*mcp.CallToolResult, any, error) {
+		if err := s.ensureInitialized(ctx, req.Session); err != nil {
+			return nil, nil, fmt.Errorf("initialization failed: %w", err)
+		}
+
+		audit, err := report.RunAudit(s.database)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to execute audit: %w", err)
+		}
+
+		markdown := audit.RenderMarkdown(s.workspaceRoot)
+
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: markdown},
+			},
+		}, nil, nil
+	})
 }
 
 type VisualizeArgs struct {
-	WorkspaceRoot string `json:"workspace_root" jsonschema:"Absolute path of the workspace root to save the visualization HTML file to."`
+	WorkspaceRoot string `json:"workspace_root,omitempty" jsonschema:"Optional absolute path of the workspace root to save the visualization HTML file to (defaults to indexed workspace root)."`
 }

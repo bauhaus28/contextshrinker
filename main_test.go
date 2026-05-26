@@ -7,6 +7,7 @@ import (
 
 	"contextshrinker/internal/db"
 	"contextshrinker/internal/ignore"
+	"contextshrinker/internal/indexer"
 	"contextshrinker/internal/lsp"
 )
 
@@ -66,16 +67,10 @@ type MyStruct struct {
 	lspManager := lsp.NewLSPManager(tmpWorkspace)
 	defer lspManager.Close()
 
-	indexer := &Indexer{
-		workspaceRoot:   tmpWorkspace,
-		database:        database,
-		ignoreList:      ignoreList,
-		lspManager:      lspManager,
-		functionsByFile: make(map[string][]db.FunctionEntity),
-	}
+	idx := indexer.NewIndexer(tmpWorkspace, database, ignoreList, lspManager)
 
 	// 3. Run Pass 1 on the workspace
-	if err := indexer.IngestWorkspace(); err != nil {
+	if err := idx.IngestWorkspace(); err != nil {
 		t.Fatalf("ingest workspace failed: %v", err)
 	}
 

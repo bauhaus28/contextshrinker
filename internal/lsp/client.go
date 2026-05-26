@@ -558,3 +558,4 @@ func printJavaInstallInstructions() {
 	log.Println("3. Create a wrapper script or symlink named 'jdtls' in your PATH pointing to the executable.")
 	log.Println("=========================================================================")
 }
+

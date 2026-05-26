@@ -115,6 +115,38 @@ Once configured, the following tools will automatically be available to your AI 
    * *Description:* Retrieves the complete abstract node structure (classes, interfaces, methods, variables) contained in a single file without feeding the raw text contents to the context window.
 4. **`visualize_codebase`**
    * *Description:* Triggers an on-demand HTML export, saving `contextshrinker_graph.html` inside your `.contextshrinker/` directory.
+5. **`get_architecture_report`**
+   * *Description:* Retrieves the complete codebase architectural health report containing metrics on God Objects, coupling hotspots, cycles, and dead unexported functions directly to your LLM context.
+
+---
+
+## 🏛️ Codebase & Architecture Optimization
+
+You can use **contextshrinker** to systematically audit coupling, analyze domain boundaries (DDD), and guide code restructuring (e.g. splitting a monolith into modules) using LLMs.
+
+### Optimization Workflow
+
+1. **Generate the Architectural Metrics**:
+   Run the analysis command in your terminal to inspect the codebase graph and generate a report:
+   ```bash
+   ./contextshrinker analyze
+   ```
+   This generates `contextshrinker-report.md` containing metrics for **God Objects** (high outbound coupling), **Black Holes** (high inbound calls), **Cyclic Import Paths**, and **Dead Code** (unused private functions).
+
+2. **Obtaining the System Prompt**:
+   Retrieve the principal systems architect prompt from the CLI:
+   ```bash
+   ./contextshrinker prompt architect
+   ```
+
+3. **Analyzing with LLMs**:
+   - Set the output of the `prompt architect` command as the **System Prompt** for your LLM.
+   - Provide the contents of the generated `contextshrinker-report.md` as the **Context / Input**.
+   - Ask the LLM to propose bounded context splits or interface boundaries.
+
+4. **Agentic / Tool-Use Workflows**:
+   If using an MCP-compatible agent (like Antigravity IDE, Claude Code, or Cursor), you can ask it directly:
+   > *"Run the contextshrinker analysis report, read the generated markdown, and act as a Systems Architect to audit our design hotspots. Use the `get_call_chain` and `get_file_structure` tools to inspect the coupling before suggesting concrete module extractions."*
 
 ---
 
@@ -134,37 +166,56 @@ dist/
 
 ## 📊 Command Line Interface (CLI) Mode
 
-You can query the codebase graph directly from your terminal and exit immediately without starting the full MCP server process (useful for manual debugging or scripts). 
+You can query the codebase graph, start the MCP server daemon explicitly, retrieve systems architect prompts, or generate health analysis reports directly from your terminal.
 
-### 1. Search the Codebase
+### 1. Start the MCP Server
+By default, running `./contextshrinker` with no arguments starts the MCP server daemon. You can also trigger it explicitly:
+```bash
+./contextshrinker start
+```
+
+### 2. Run Codebase Architectural Analysis
+Analyze the codebase structure (God objects, inbound call hot-spots, cyclic imports, dead code) and write a report to `contextshrinker-report.md`:
+```bash
+./contextshrinker analyze
+```
+
+### 3. Print Principal Systems Architect Prompt
+Print the Domain-Driven Design (DDD) principal systems architect system prompt to stdout:
+```bash
+./contextshrinker prompt architect
+```
+
+### 4. Search the Codebase
 Find functions, classes, or variables matching a query:
 ```bash
-./contextshrinker -search "IngestWorkspace"
+./contextshrinker search "IngestWorkspace"
 ```
 
-### 2. Trace Call Chains
+### 5. Trace Call Chains
 Trace upstream callers of a target function name (default depth is 3, maximum is 5):
 ```bash
-./contextshrinker -call-chain "IngestWorkspace" -depth 3
+./contextshrinker call-chain "IngestWorkspace" --depth 3
 ```
 
-### 3. Retrieve File Structure
+### 6. Retrieve File Structure
 Get the structure of a file without reading its full text content:
 ```bash
-./contextshrinker -structure "main.go"
+./contextshrinker structure "main.go"
 ```
 
-### 4. Generate Interactive Visualization
+### 7. Generate Interactive Visualization
 Generate a Vis.js codebase graph representation:
 ```bash
-./contextshrinker -visualize
+./contextshrinker visualize
 ```
 Open the generated `.contextshrinker/contextshrinker_graph.html` in any browser to explore your project's architecture interactively.
 
-### Options
-* `-workspace <path>`: Specifies the project directory (defaults to `.`).
-* `-db <path>`: Specifies the database storage directory (defaults to `.contextshrinker/db`).
-* `-reindex`: Forces a full workspace ingestion scan (re-parsing code and mapping LSP relationships) before executing the query. If the database is empty, ingestion runs automatically.
+### Options (Global Flags)
+* `--workspace <path>`: Specifies the project directory (defaults to `.`).
+* `--db <path>`: Specifies the database storage directory (defaults to `.contextshrinker/db`).
+* `--reindex`: Forces a full workspace ingestion scan (re-parsing code and mapping LSP relationships) before executing the query. If the database is empty, ingestion runs automatically.
+
 * **Note:** Because Kuzu DB establishes an exclusive file-level lock, ensure your IDE's MCP client is paused or stopped when running CLI commands on the active database, or use a different workspace/db directory with the CLI flags.
 
 ---

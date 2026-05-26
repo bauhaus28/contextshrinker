@@ -451,15 +451,6 @@ func (d *Database) CreateImplements(fromID, toID string) error {
 	return nil
 }
 
-func mapStr(m map[string]any, key string) string {
-	v, _ := m[key].(string)
-	return v
-}
-
-func mapInt64(m map[string]any, key string) int64 {
-	v, _ := m[key].(int64)
-	return v
-}
 
 // SearchCodebase executes search over functions, classes, and variables.
 func (d *Database) SearchCodebase(query string) ([]SearchResult, error) {
@@ -791,4 +782,150 @@ func (d *Database) ExportGraph() ([]VisNode, []VisEdge, error) {
 	}
 
 	return nodes, edges, nil
+}
+
+type GodObjectResult struct {
+	ClassName          string
+	FilePath           string
+	OutboundComplexity int64
+}
+
+type BlackHoleResult struct {
+	FunctionName        string
+	FilePath            string
+	InboundDependencies int64
+}
+
+type CycleResult struct {
+	FilePath string
+}
+
+type DeadCodeResult struct {
+	FunctionName string
+	FilePath     string
+}
+
+// GetGodObjects returns classes with high outbound complexity (contains many methods/variables).
+func (d *Database) GetGodObjects() ([]GodObjectResult, error) {
+	var results []GodObjectResult
+	stmt, err := d.conn.Prepare(`MATCH (c:Class)-[r:CONTAINS]->() RETURN c.name, c.file_path, count(r) AS OutboundComplexity ORDER BY OutboundComplexity DESC LIMIT 10`)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+	res, err := d.conn.Execute(stmt, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+
+	for res.HasNext() {
+		tuple, err := res.Next()
+		if err != nil {
+			continue
+		}
+		m, err := tuple.GetAsMap()
+		if err == nil {
+			results = append(results, GodObjectResult{
+				ClassName:          mapStr(m, "c.name"),
+				FilePath:           mapStr(m, "c.file_path"),
+				OutboundComplexity: mapInt64(m, "OutboundComplexity"),
+			})
+		}
+		tuple.Close()
+	}
+	return results, nil
+}
+
+// GetBlackHoles returns functions with high inbound dependencies (heavily called).
+func (d *Database) GetBlackHoles() ([]BlackHoleResult, error) {
+	var results []BlackHoleResult
+	stmt, err := d.conn.Prepare(`MATCH ()-[r:CALLS]->(f:Function) RETURN f.name, f.file_path, count(r) AS InboundDependencies ORDER BY InboundDependencies DESC LIMIT 10`)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+	res, err := d.conn.Execute(stmt, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+
+	for res.HasNext() {
+		tuple, err := res.Next()
+		if err != nil {
+			continue
+		}
+		m, err := tuple.GetAsMap()
+		if err == nil {
+			results = append(results, BlackHoleResult{
+				FunctionName:        mapStr(m, "f.name"),
+				FilePath:            mapStr(m, "f.file_path"),
+				InboundDependencies: mapInt64(m, "InboundDependencies"),
+			})
+		}
+		tuple.Close()
+	}
+	return results, nil
+}
+
+// GetCycles detects cyclic dependencies (circular imports between files).
+func (d *Database) GetCycles() ([]CycleResult, error) {
+	var results []CycleResult
+	stmt, err := d.conn.Prepare(`MATCH (a:File)-[:IMPORTS*1..5]->(a) RETURN a.path LIMIT 5`)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+	res, err := d.conn.Execute(stmt, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+
+	for res.HasNext() {
+		tuple, err := res.Next()
+		if err != nil {
+			continue
+		}
+		m, err := tuple.GetAsMap()
+		if err == nil {
+			results = append(results, CycleResult{
+				FilePath: mapStr(m, "a.path"),
+			})
+		}
+		tuple.Close()
+	}
+	return results, nil
+}
+
+// GetDeadCode detects functions that are not called and are not exported.
+func (d *Database) GetDeadCode() ([]DeadCodeResult, error) {
+	var results []DeadCodeResult
+	stmt, err := d.conn.Prepare(`MATCH (f:Function) WHERE NOT ()-[:CALLS]->(f) AND f.is_exported = false RETURN f.name, f.file_path`)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+	res, err := d.conn.Execute(stmt, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+
+	for res.HasNext() {
+		tuple, err := res.Next()
+		if err != nil {
+			continue
+		}
+		m, err := tuple.GetAsMap()
+		if err == nil {
+			results = append(results, DeadCodeResult{
+				FunctionName: mapStr(m, "f.name"),
+				FilePath:     mapStr(m, "f.file_path"),
+			})
+		}
+		tuple.Close()
+	}
+	return results, nil
 }

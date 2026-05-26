@@ -47,6 +47,7 @@ func ParseFile(filePath string) (*ParsedResult, error) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(filePath))
+
 	var lang *sitter.Language
 
 	switch ext {
@@ -325,3 +326,4 @@ func extractInheritance(node *sitter.Node, source []byte, classID string, res *P
 		}
 	}
 }
+
