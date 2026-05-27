@@ -48,7 +48,7 @@ graph TD
 ### Build from Source
 Clone the repository and run:
 ```bash
-go build -o contextshrinker main.go
+go build -o contextshrinker
 ```
 To install it directly to your system `PATH`:
 ```bash
