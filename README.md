@@ -41,11 +41,32 @@ graph TD
 
 ## 📥 Installation
 
-### Prerequisites
+### Option 1: Precompiled Binaries (Fastest)
+
+If you don't want to install Go, you can download a precompiled portable package for your platform:
+1. Go to the [Releases](https://github.com/bauhaus28/contextshrinker/releases) page.
+2. Download the archive for your OS (`.tar.gz` or `.zip`).
+3. Extract the archive. Keep the executable (`contextshrinker`) and its dynamic library (`libkuzu` / `kuzu_shared`) in the same folder.
+4. Run the executable from that directory:
+
+**macOS / Linux:**
+```bash
+chmod +x contextshrinker
+./contextshrinker --help
+```
+
+**Windows:**
+```cmd
+contextshrinker.exe --help
+```
+
+### Option 2: Build from Source (Requires Go)
+
+#### Prerequisites
 * [Go](https://go.dev/) (1.21 or later)
 * Node.js & npm (for automatically installing JS/TS and Python LSPs)
 
-### Build from Source
+#### Compile
 Clone the repository and run:
 ```bash
 go build -o contextshrinker
