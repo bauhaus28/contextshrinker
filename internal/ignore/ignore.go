@@ -2,7 +2,6 @@ package ignore
 
 import (
 	"bufio"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,30 +34,33 @@ func NewIgnoreList(rootDir string) (*IgnoreList, error) {
 			".idea",
 			".cache",
 			"tmp",
+			// Go-specific defaults
+			"testdata",
+			"test_cache",
+			"test-cache",
+			".test_cache",
+			"*.test",
+			"*.out",
+			"*.coverprofile",
+			"profile.cov",
+			"go.work",
+			"go.work.sum",
 		},
 	}
 
-	// 1. Resolve ignore file path (check .contextshrinker/ignore first, then legacy .contextshrinkerignore)
-	ignoreFilePath := filepath.Join(rootDir, ".contextshrinker", "ignore")
+	// 1. Resolve ignore file path (check .csignore first, then legacy .contextshrinker/ignore, then legacy .contextshrinkerignore)
+	ignoreFilePath := filepath.Join(rootDir, ".csignore")
 	if _, err := os.Stat(ignoreFilePath); os.IsNotExist(err) {
-		legacyPath := filepath.Join(rootDir, ".contextshrinkerignore")
-		if _, errLegacy := os.Stat(legacyPath); errLegacy == nil {
-			ignoreFilePath = legacyPath
+		legacyPath1 := filepath.Join(rootDir, ".contextshrinker", "ignore")
+		if _, errLegacy1 := os.Stat(legacyPath1); errLegacy1 == nil {
+			ignoreFilePath = legacyPath1
 		} else {
-			// Auto-create default .contextshrinker/ignore
-			schwobDir := filepath.Join(rootDir, ".contextshrinker")
-			if errMkdir := os.MkdirAll(schwobDir, 0755); errMkdir != nil {
-				return nil, errMkdir
-			}
-			defaultIgnoreContent := `# Custom ignore patterns for contextshrinker
-# Each line is a pattern matched recursively.
-# Default folders (node_modules, vendor, __pycache__, .git, build, target, .contextshrinker, contextshrinker_graph.html) are ignored by default.
-
-`
-			if errWrite := os.WriteFile(ignoreFilePath, []byte(defaultIgnoreContent), 0644); errWrite != nil {
-				log.Printf("Warning: failed to create default ignore file at %s: %v", ignoreFilePath, errWrite)
+			legacyPath2 := filepath.Join(rootDir, ".contextshrinkerignore")
+			if _, errLegacy2 := os.Stat(legacyPath2); errLegacy2 == nil {
+				ignoreFilePath = legacyPath2
 			} else {
-				log.Printf("Created default ignore file at %s", ignoreFilePath)
+				// No ignore file exists, return the default ignore list
+				return il, nil
 			}
 		}
 	}

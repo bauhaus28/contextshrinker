@@ -5,14 +5,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	kuzu "github.com/kuzudb/go-kuzu"
 )
 
 // Database wraps the Kùzu database instance and its connection.
 type Database struct {
-	db   *kuzu.Database
-	conn *kuzu.Connection
+	db         *kuzu.Database
+	conn       *kuzu.Connection
+	isReadOnly bool
+	mu         sync.Mutex
+}
+
+// IsReadOnly returns true if the database was opened in read-only mode.
+func (d *Database) IsReadOnly() bool {
+	return d.isReadOnly
 }
 
 // Entity types for mapping in Go code
@@ -73,9 +81,17 @@ func NewDatabase(dbPath string) (*Database, error) {
 
 	config := kuzu.DefaultSystemConfig()
 	// Disable compression if necessary or stick to defaults
+	isReadOnly := false
 	db, err := kuzu.OpenDatabase(dbPath, config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		// Fallback to read-only mode if read-write failed (e.g. database is locked by another process)
+		config.ReadOnly = true
+		var fallbackErr error
+		db, fallbackErr = kuzu.OpenDatabase(dbPath, config)
+		if fallbackErr != nil {
+			return nil, fmt.Errorf("failed to open database: %w (fallback read-only failed: %v)", err, fallbackErr)
+		}
+		isReadOnly = true
 	}
 
 	conn, err := kuzu.OpenConnection(db)
@@ -84,11 +100,13 @@ func NewDatabase(dbPath string) (*Database, error) {
 		return nil, fmt.Errorf("failed to open connection: %w", err)
 	}
 
-	d := &Database{db: db, conn: conn}
-	if err := d.initSchema(); err != nil {
-		conn.Close()
-		db.Close()
-		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	d := &Database{db: db, conn: conn, isReadOnly: isReadOnly}
+	if !isReadOnly {
+		if err := d.initSchema(); err != nil {
+			conn.Close()
+			db.Close()
+			return nil, fmt.Errorf("failed to initialize schema: %w", err)
+		}
 	}
 
 	return d, nil
@@ -96,6 +114,8 @@ func NewDatabase(dbPath string) (*Database, error) {
 
 // Close closes the connection and database.
 func (d *Database) Close() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.conn != nil {
 		d.conn.Close()
 	}
@@ -106,6 +126,8 @@ func (d *Database) Close() {
 
 // IsEmpty returns true if there are no File nodes in the database.
 func (d *Database) IsEmpty() (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	stmt, err := d.conn.Prepare(`MATCH (f:File) RETURN count(f) AS cnt`)
 	if err != nil {
 		return true, err
@@ -131,8 +153,41 @@ func (d *Database) IsEmpty() (bool, error) {
 	return true, nil
 }
 
+// FileExists returns true if a File node with the given path exists in the database.
+func (d *Database) FileExists(path string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	stmt, err := d.conn.Prepare(`MATCH (f:File {path: $path}) RETURN count(f) AS cnt`)
+	if err != nil {
+		return false, err
+	}
+	defer stmt.Close()
+
+	res, err := d.conn.Execute(stmt, map[string]any{"path": path})
+	if err != nil {
+		return false, err
+	}
+	defer res.Close()
+
+	if res.HasNext() {
+		tuple, err := res.Next()
+		if err != nil {
+			return false, err
+		}
+		defer tuple.Close()
+		m, err := tuple.GetAsMap()
+		if err != nil {
+			return false, err
+		}
+		return mapInt64(m, "cnt") > 0, nil
+	}
+	return false, nil
+}
+
 // runDDL ignores "already exists" errors.
 func (d *Database) runDDL(query string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	res, err := d.conn.Query(query)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "Duplicate") {
@@ -178,6 +233,8 @@ func (d *Database) initSchema() error {
 
 // DeleteFileEntities deletes all nodes and relationships associated with a file path (delta update).
 func (d *Database) DeleteFileEntities(filePath string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	queries := []string{
 		`MATCH (fn:Function) WHERE fn.file_path = $path DETACH DELETE fn`,
 		`MATCH (c:Class) WHERE c.file_path = $path DETACH DELETE c`,
@@ -202,6 +259,8 @@ func (d *Database) DeleteFileEntities(filePath string) error {
 
 // InsertFile inserts a file node.
 func (d *Database) InsertFile(path, hash string, lastModified int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	stmt, err := d.conn.Prepare(`CREATE (f:File {path: $path, hash: $hash, last_modified: $last_modified})`)
 	if err != nil {
 		return err
@@ -222,6 +281,8 @@ func (d *Database) InsertFile(path, hash string, lastModified int64) error {
 
 // InsertFunction inserts a function node.
 func (d *Database) InsertFunction(fn FunctionEntity) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	stmt, err := d.conn.Prepare(`CREATE (fn:Function {id: $id, name: $name, file_path: $file_path, start_line: $start_line, end_line: $end_line, docstring: $docstring, is_exported: $is_exported})`)
 	if err != nil {
 		return err
@@ -246,6 +307,8 @@ func (d *Database) InsertFunction(fn FunctionEntity) error {
 
 // InsertClass inserts a class node.
 func (d *Database) InsertClass(c ClassEntity) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	stmt, err := d.conn.Prepare(`CREATE (c:Class {id: $id, name: $name, file_path: $file_path, docstring: $docstring, type_category: $type_category})`)
 	if err != nil {
 		return err
@@ -268,6 +331,8 @@ func (d *Database) InsertClass(c ClassEntity) error {
 
 // InsertVariable inserts a variable node.
 func (d *Database) InsertVariable(v VariableEntity) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	stmt, err := d.conn.Prepare(`CREATE (v:Variable {id: $id, name: $name, file_path: $file_path, type_hint: $type_hint})`)
 	if err != nil {
 		return err
@@ -298,6 +363,8 @@ func validateEntityType(entityType string) error {
 
 // CreateContainsFileToEntity creates a CONTAINS edge from File to Function/Class/Variable.
 func (d *Database) CreateContainsFileToEntity(filePath, entityID, entityType string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err := validateEntityType(entityType); err != nil {
 		return err
 	}
@@ -321,6 +388,8 @@ func (d *Database) CreateContainsFileToEntity(filePath, entityID, entityType str
 
 // CreateContainsClassToEntity creates a CONTAINS edge from Class to Function/Variable.
 func (d *Database) CreateContainsClassToEntity(classID, entityID, entityType string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err := validateEntityType(entityType); err != nil {
 		return err
 	}
@@ -344,6 +413,8 @@ func (d *Database) CreateContainsClassToEntity(classID, entityID, entityType str
 
 // CreateCalls creates a CALLS edge.
 func (d *Database) CreateCalls(callerID, calleeID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	stmt, err := d.conn.Prepare(`MATCH (caller:Function {id: $caller_id}), (callee:Function {id: $callee_id}) CREATE (caller)-[:CALLS]->(callee)`)
 	if err != nil {
 		return err
@@ -363,6 +434,8 @@ func (d *Database) CreateCalls(callerID, calleeID string) error {
 
 // CreateImportsFileToFile creates an IMPORTS edge between files.
 func (d *Database) CreateImportsFileToFile(fromPath, toPath string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	stmt, err := d.conn.Prepare(`MATCH (f1:File {path: $from_path}), (f2:File {path: $to_path}) CREATE (f1)-[:IMPORTS]->(f2)`)
 	if err != nil {
 		return err
@@ -382,6 +455,8 @@ func (d *Database) CreateImportsFileToFile(fromPath, toPath string) error {
 
 // CreateImportsFileToEntity creates an IMPORTS edge from File to Class/Function/Variable.
 func (d *Database) CreateImportsFileToEntity(fromPath, entityID, entityType string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err := validateEntityType(entityType); err != nil {
 		return err
 	}
@@ -405,6 +480,8 @@ func (d *Database) CreateImportsFileToEntity(fromPath, entityID, entityType stri
 
 // FindClassIDByName returns the ID of the first Class with the given name, or "" if not found.
 func (d *Database) FindClassIDByName(name string) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	stmt, err := d.conn.Prepare(`MATCH (c:Class {name: $name}) RETURN c.id LIMIT 1`)
 	if err != nil {
 		return "", err
@@ -434,6 +511,8 @@ func (d *Database) FindClassIDByName(name string) (string, error) {
 
 // CreateImplements creates an IMPLEMENTS edge between Classes/Interfaces.
 func (d *Database) CreateImplements(fromID, toID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	stmt, err := d.conn.Prepare(`MATCH (c1:Class {id: $from_id}), (c2:Class {id: $to_id}) CREATE (c1)-[:IMPLEMENTS]->(c2)`)
 	if err != nil {
 		return err
@@ -454,6 +533,8 @@ func (d *Database) CreateImplements(fromID, toID string) error {
 
 // SearchCodebase executes search over functions, classes, and variables.
 func (d *Database) SearchCodebase(query string) ([]SearchResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var results []SearchResult
 	var firstErr error
 
@@ -535,6 +616,8 @@ func (d *Database) SearchCodebase(query string) ([]SearchResult, error) {
 
 // GetCallChain traces all upstream callers of the target function up to depth.
 func (d *Database) GetCallChain(targetFunction string, depth int) ([]CallChainLink, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if depth < 1 {
 		depth = 1
 	} else if depth > 5 {
@@ -577,6 +660,8 @@ func (d *Database) GetCallChain(targetFunction string, depth int) ([]CallChainLi
 
 // GetFileStructure returns the hierarchical contents of a file.
 func (d *Database) GetFileStructure(filePath string) ([]FileStructureItem, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var items []FileStructureItem
 
 	// 1. Top-level Functions
@@ -717,6 +802,8 @@ func (d *Database) queryRows(query string, fn func(map[string]any)) {
 }
 
 func (d *Database) ExportGraph() ([]VisNode, []VisEdge, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var nodes []VisNode
 	var edges []VisEdge
 
@@ -807,6 +894,8 @@ type DeadCodeResult struct {
 
 // GetGodObjects returns classes with high outbound complexity (contains many methods/variables).
 func (d *Database) GetGodObjects() ([]GodObjectResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var results []GodObjectResult
 	stmt, err := d.conn.Prepare(`MATCH (c:Class)-[r:CONTAINS]->() RETURN c.name, c.file_path, count(r) AS OutboundComplexity ORDER BY OutboundComplexity DESC LIMIT 10`)
 	if err != nil {
@@ -839,6 +928,8 @@ func (d *Database) GetGodObjects() ([]GodObjectResult, error) {
 
 // GetBlackHoles returns functions with high inbound dependencies (heavily called).
 func (d *Database) GetBlackHoles() ([]BlackHoleResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var results []BlackHoleResult
 	stmt, err := d.conn.Prepare(`MATCH ()-[r:CALLS]->(f:Function) RETURN f.name, f.file_path, count(r) AS InboundDependencies ORDER BY InboundDependencies DESC LIMIT 10`)
 	if err != nil {
@@ -871,6 +962,8 @@ func (d *Database) GetBlackHoles() ([]BlackHoleResult, error) {
 
 // GetCycles detects cyclic dependencies (circular imports between files).
 func (d *Database) GetCycles() ([]CycleResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var results []CycleResult
 	stmt, err := d.conn.Prepare(`MATCH (a:File)-[:IMPORTS*1..5]->(a) RETURN a.path LIMIT 5`)
 	if err != nil {
@@ -901,6 +994,8 @@ func (d *Database) GetCycles() ([]CycleResult, error) {
 
 // GetDeadCode detects functions that are not called and are not exported.
 func (d *Database) GetDeadCode() ([]DeadCodeResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var results []DeadCodeResult
 	stmt, err := d.conn.Prepare(`MATCH (f:Function) WHERE NOT ()-[:CALLS]->(f) AND f.is_exported = false RETURN f.name, f.file_path`)
 	if err != nil {

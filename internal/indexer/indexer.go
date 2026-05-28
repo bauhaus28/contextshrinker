@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bauhaus28/contextshrinker/internal/db"
 	"github.com/bauhaus28/contextshrinker/internal/ignore"
@@ -24,6 +26,7 @@ type Indexer struct {
 	LspManager      *lsp.LSPManager
 	FunctionsByFile map[string][]db.FunctionEntity
 	FunctionsMu     sync.RWMutex
+	logMu           sync.Mutex
 }
 
 func NewIndexer(workspaceRoot string, database *db.Database, ignoreList *ignore.IgnoreList, lspManager *lsp.LSPManager) *Indexer {
@@ -34,6 +37,19 @@ func NewIndexer(workspaceRoot string, database *db.Database, ignoreList *ignore.
 		LspManager:      lspManager,
 		FunctionsByFile: make(map[string][]db.FunctionEntity),
 	}
+}
+
+func (idx *Indexer) logProgress(format string, args ...any) {
+	idx.logMu.Lock()
+	defer idx.logMu.Unlock()
+	fmt.Fprintf(os.Stderr, format, args...)
+}
+
+func (idx *Indexer) logWarning(format string, args ...any) {
+	idx.logMu.Lock()
+	defer idx.logMu.Unlock()
+	fmt.Fprintf(os.Stderr, "\r                                                                                \r")
+	log.Printf(format, args...)
 }
 
 // IngestWorkspace walks the workspace and performs Pass 1 and Pass 2 on all source files.
@@ -71,19 +87,42 @@ func (idx *Indexer) IngestWorkspace() error {
 	// Pass 1: Tree-sitter scan
 	log.Printf("Pass 1: Syntax parsing %d files...", len(files))
 	for i, file := range files {
-		if (i+1)%500 == 0 || i == 0 || i == len(files)-1 {
-			log.Printf("Pass 1: [%d/%d] Ingesting %s...", i+1, len(files), filepath.Base(file))
-		}
+		idx.logProgress("\rPass 1: [%d/%d] Ingesting %s...                      ", i+1, len(files), filepath.Base(file))
 		if err := idx.runPass1(file); err != nil {
-			log.Printf("Pass 1 failed for %s: %v", file, err)
+			idx.logWarning("Pass 1 failed for %s: %v", file, err)
 		}
 	}
+	idx.logProgress("\n")
 
 	// Pass 2: LSP semantic indexing
-	log.Printf("Pass 2: Building relational call graph...")
-	for _, file := range files {
-		idx.runPass2(file)
+	log.Printf("Pass 2: Building relational call graph for %d files...", len(files))
+
+	numWorkers := 8
+	if numWorkers > len(files) {
+		numWorkers = len(files)
 	}
+
+	var wg sync.WaitGroup
+	fileChan := make(chan string, len(files))
+	for _, file := range files {
+		fileChan <- file
+	}
+	close(fileChan)
+
+	var completed int64
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range fileChan {
+				idx.runPass2(file)
+				curr := atomic.AddInt64(&completed, 1)
+				idx.logProgress("\rPass 2: [%d/%d] Completed references query for %s                      ", curr, len(files), filepath.Base(file))
+			}
+		}()
+	}
+	wg.Wait()
+	idx.logProgress("\n")
 
 	return nil
 }
@@ -99,9 +138,12 @@ func (idx *Indexer) runPass1(filePath string) error {
 		return err
 	}
 
-	// Delete old references for the file first (idempotent delta)
-	if err := idx.Database.DeleteFileEntities(filePath); err != nil {
-		return err
+	// Delete old references for the file first if it already exists (idempotent delta)
+	exists, err := idx.Database.FileExists(filePath)
+	if err == nil && exists {
+		if err := idx.Database.DeleteFileEntities(filePath); err != nil {
+			return err
+		}
 	}
 
 	// Insert File Node
@@ -177,13 +219,14 @@ func (idx *Indexer) runPass2(filePath string) {
 	lang := detectLanguage(filePath)
 	client, err := idx.LspManager.GetClient(lang)
 	if err != nil {
-		log.Printf("Skipping Pass 2 for %s: LSP not available (%v)", filePath, err)
+		idx.logWarning("Skipping Pass 2 for %s: LSP not available (%v)", filePath, err)
 		return
 	}
 
 	// Read file content
 	contentBytes, err := os.ReadFile(filePath)
 	if err != nil {
+		idx.logWarning("Error: failed to read file content for Pass 2: %s: %v", filePath, err)
 		return
 	}
 	contentStr := string(contentBytes)
@@ -192,10 +235,12 @@ func (idx *Indexer) runPass2(filePath string) {
 	_ = client.DidOpen(filePath, contentStr)
 
 	// Query references for each function
+	edgesCreated := 0
 	for _, fn := range fileFunctions {
 		line, char := findNamePositionInFile(contentStr, fn.StartLine, fn.Name)
 		locs, err := client.References(context.Background(), filePath, line, char)
 		if err != nil {
+			idx.logWarning("Warning: references query failed for %s:%s at line %d: %v", filepath.Base(filePath), fn.Name, line+1, err)
 			continue
 		}
 
@@ -209,7 +254,9 @@ func (idx *Indexer) runPass2(filePath string) {
 			refLine := loc.Range.Start.Line + 1 // 1-indexed
 			callerFnID := idx.findFunctionAtLine(refPath, refLine)
 			if callerFnID != "" && callerFnID != fn.ID {
-				_ = idx.Database.CreateCalls(callerFnID, fn.ID)
+				if err := idx.Database.CreateCalls(callerFnID, fn.ID); err == nil {
+					edgesCreated++
+				}
 			}
 		}
 	}

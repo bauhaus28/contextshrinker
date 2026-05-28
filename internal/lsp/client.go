@@ -74,9 +74,9 @@ func FindLSPBinary(lang string) (string, error) {
 	case "go":
 		names = []string{"gopls"}
 	case "python":
-		names = []string{"pyright", "basedpyright"}
+		names = []string{"pyright-langserver", "basedpyright-langserver", "pyright", "basedpyright"}
 	case "javascript", "typescript":
-		names = []string{"typescript-language-server", "tsserver", "vtsls"}
+		names = []string{"typescript-language-server", "vtsls"}
 	case "java":
 		names = []string{"jdtls"}
 	default:
@@ -91,12 +91,20 @@ func FindLSPBinary(lang string) (string, error) {
 		}
 	}
 
-	// 2. Check sandboxed local directory (~/.local/share/contextshrinker/bin)
+	// 2. Check sandboxed local directory (~/.local/share/contextshrinker/bin and node_modules/.bin)
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
 		sandboxDir := filepath.Join(homeDir, ".local", "share", "contextshrinker", "bin")
 		for _, name := range names {
 			path := filepath.Join(sandboxDir, name)
+			if _, err := os.Stat(path); err == nil {
+				return path, nil
+			}
+		}
+
+		nodeBinDir := filepath.Join(homeDir, ".local", "share", "contextshrinker", "node_modules", ".bin")
+		for _, name := range names {
+			path := filepath.Join(nodeBinDir, name)
 			if _, err := os.Stat(path); err == nil {
 				return path, nil
 			}
@@ -402,6 +410,7 @@ func URIToPath(uriStr string) (string, error) {
 type LSPManager struct {
 	workspaceRoot string
 	clients       map[string]*LSPClient
+	failedLSPs    map[string]error
 	mu            sync.Mutex
 }
 
@@ -409,6 +418,7 @@ func NewLSPManager(workspaceRoot string) *LSPManager {
 	return &LSPManager{
 		workspaceRoot: workspaceRoot,
 		clients:       make(map[string]*LSPClient),
+		failedLSPs:    make(map[string]error),
 	}
 }
 
@@ -429,32 +439,46 @@ func (m *LSPManager) GetClient(lang string) (*LSPClient, error) {
 		return client, nil
 	}
 
+	if err, exists := m.failedLSPs[lang]; exists {
+		return nil, err
+	}
+
 	binaryPath, err := FindLSPBinary(lang)
 	if err != nil {
 		// Attempt auto-install
 		binaryPath, err = AutoInstallLSP(lang)
 		if err != nil {
-			return nil, fmt.Errorf("failed to locate or install LSP for %s: %w", lang, err)
+			err = fmt.Errorf("failed to locate or install LSP for %s: %w", lang, err)
+			m.failedLSPs[lang] = err
+			return nil, err
 		}
 	}
 
 	var args []string
 	if lang == "go" {
 		args = []string{"-mode=stdio"}
+	} else if lang == "javascript" || lang == "typescript" {
+		args = []string{"--stdio"}
+	} else if lang == "python" {
+		args = []string{"--stdio"}
 	}
 
 	log.Printf("Starting LSP for %s using binary %s", lang, binaryPath)
 	client, err := NewLSPClient(binaryPath, args)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start LSP for %s: %w", lang, err)
+		err = fmt.Errorf("failed to start LSP for %s: %w", lang, err)
+		m.failedLSPs[lang] = err
+		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	if err := client.Initialize(ctx, m.workspaceRoot); err != nil {
 		client.Close()
-		return nil, fmt.Errorf("failed to initialize LSP for %s: %w", lang, err)
+		err = fmt.Errorf("failed to initialize LSP for %s: %w", lang, err)
+		m.failedLSPs[lang] = err
+		return nil, err
 	}
 
 	m.clients[lang] = client
@@ -503,7 +527,7 @@ func AutoInstallLSP(lang string) (string, error) {
 			printNPMInstallInstructions("python", "pyright")
 			return "", err
 		}
-		path := filepath.Join(sandboxDir, "node_modules", ".bin", "pyright")
+		path := filepath.Join(sandboxDir, "node_modules", ".bin", "pyright-langserver")
 		if _, err := os.Stat(path); err == nil {
 			return path, nil
 		}

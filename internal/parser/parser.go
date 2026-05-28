@@ -95,7 +95,7 @@ func walkAST(node *sitter.Node, source []byte, res *ParsedResult, currentClassID
 		// Extract function/method
 		name := extractChildName(node, source)
 		if name != "" {
-			id := fmt.Sprintf("%s:%d:%s", res.FilePath, startPoint.Row+1, name)
+			id := fmt.Sprintf("%s:%d:%d:%s", res.FilePath, startPoint.Row+1, startPoint.Column, name)
 			doc := getPrecedingComment(node, source)
 
 			isExported := true
@@ -155,7 +155,7 @@ func walkAST(node *sitter.Node, source []byte, res *ParsedResult, currentClassID
 		}
 
 		if name != "" {
-			id := fmt.Sprintf("%s:%d:%s", res.FilePath, startPoint.Row+1, name)
+			id := fmt.Sprintf("%s:%d:%d:%s", res.FilePath, startPoint.Row+1, startPoint.Column, name)
 			doc := getPrecedingComment(node, source)
 
 			category := "class"
@@ -196,7 +196,7 @@ func walkAST(node *sitter.Node, source []byte, res *ParsedResult, currentClassID
 		// Extract variables
 		name := extractChildName(node, source)
 		if name != "" {
-			id := fmt.Sprintf("%s:%d:%s", res.FilePath, startPoint.Row+1, name)
+			id := fmt.Sprintf("%s:%d:%d:%s", res.FilePath, startPoint.Row+1, startPoint.Column, name)
 			typeHint := ""
 			typeNode := node.ChildByFieldName("type")
 			if typeNode != nil {

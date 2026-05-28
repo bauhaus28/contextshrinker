@@ -84,3 +84,41 @@ type sitterFn struct {
 	doc      string
 	exported bool
 }
+
+func TestParseFile_Go_DuplicateNamesSameLine(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "contextshrinker-parser-test-dup")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// In Go: `var B struct { B string }` declares a variable B and a struct field B on the same line
+	content := `package test
+var B struct { B string }
+`
+	filePath := filepath.Join(tmpDir, "test.go")
+	err = os.WriteFile(filePath, []byte(content), 0644)
+	if err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	res, err := ParseFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to parse file: %v", err)
+	}
+
+	if len(res.Variables) != 2 {
+		t.Fatalf("expected 2 variables, got %d: %+v", len(res.Variables), res.Variables)
+	}
+
+	v1 := res.Variables[0]
+	v2 := res.Variables[1]
+
+	if v1.Name != "B" || v2.Name != "B" {
+		t.Errorf("expected both variables to have name 'B', got %q and %q", v1.Name, v2.Name)
+	}
+
+	if v1.ID == v2.ID {
+		t.Errorf("expected variables on same line to have different IDs, but both got %q", v1.ID)
+	}
+}

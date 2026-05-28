@@ -1,9 +1,16 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	kuzu "github.com/kuzudb/go-kuzu"
 
 	"github.com/bauhaus28/contextshrinker/internal/db"
 	"github.com/bauhaus28/contextshrinker/internal/ignore"
@@ -131,3 +138,244 @@ type MyStruct struct {
 		t.Error("file structure is missing class MyStruct")
 	}
 }
+
+func TestDatabaseReadOnlyFallback(t *testing.T) {
+	if os.Getenv("BE_DB_RO_LOCKER") == "1" {
+		dbPath := os.Getenv("DB_PATH")
+		// Open the database in read-only mode directly using kuzu to hold a read-only lock
+		config := kuzu.DefaultSystemConfig()
+		config.ReadOnly = true
+		db1, err := kuzu.OpenDatabase(dbPath, config)
+		if err != nil {
+			os.Exit(1)
+		}
+		defer db1.Close()
+		// Sleep long enough for the test to run
+		time.Sleep(10 * time.Second)
+		os.Exit(0)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "contextshrinker-test-ro-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "db")
+
+	// Initialize the database first (must be done in read-write mode)
+	initDB, err := db.NewDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to initialize database: %v", err)
+	}
+	initDB.Close()
+
+	// Start subprocess to hold the read-only lock
+	cmd := exec.Command(os.Args[0], "-test.run=TestDatabaseReadOnlyFallback")
+	cmd.Env = append(os.Environ(), "BE_DB_RO_LOCKER=1", "DB_PATH="+dbPath)
+	err = cmd.Start()
+	if err != nil {
+		t.Fatalf("failed to start subprocess: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	// Wait for the subprocess to open the database and hold the read-only lock
+	var db2 *db.Database
+	var lastErr error
+	for i := 0; i < 20; i++ {
+		time.Sleep(200 * time.Millisecond)
+		db2, lastErr = db.NewDatabase(dbPath)
+		if lastErr == nil {
+			break
+		}
+	}
+	if lastErr != nil {
+		t.Fatalf("failed to open database: %v", lastErr)
+	}
+	defer db2.Close()
+
+	if !db2.IsReadOnly() {
+		t.Error("expected second database connection to fallback to read-only, but it was read-write")
+	}
+}
+
+func TestDatabaseConcurrency(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "contextshrinker-test-concurrency-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "db")
+
+	database, err := db.NewDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	// Setup initial data so reads actually query something
+	_ = database.InsertFile("test.go", "hash1", 12345)
+	_ = database.InsertFunction(db.FunctionEntity{
+		ID:       "fn1",
+		Name:     "MyFunc",
+		FilePath: "test.go",
+	})
+
+	stopChan := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Goroutine 1: Continuous Writes
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stopChan:
+				return
+			default:
+				_ = database.InsertFile(fmt.Sprintf("test_%d.go", i), "hash", int64(i))
+				i++
+			}
+		}
+	}()
+
+	// Goroutine 2: Continuous Reads (IsEmpty)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stopChan:
+				return
+			default:
+				_, _ = database.IsEmpty()
+			}
+		}
+	}()
+
+	// Goroutine 3: Continuous Reads (SearchCodebase)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stopChan:
+				return
+			default:
+				_, _ = database.SearchCodebase("My")
+			}
+		}
+	}()
+
+	// Goroutine 4: Continuous Reads (GetCallChain)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stopChan:
+				return
+			default:
+				_, _ = database.GetCallChain("MyFunc", 2)
+			}
+		}
+	}()
+
+	// Run concurrently for 500 milliseconds
+	time.Sleep(500 * time.Millisecond)
+	close(stopChan)
+	wg.Wait()
+}
+
+func TestInitCommand(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "contextshrinker-init-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Save old workspacePath
+	oldWorkspacePath := workspacePath
+	defer func() { workspacePath = oldWorkspacePath }()
+
+	workspacePath = tmpDir
+
+	// Run init
+	runInit()
+
+	// Assert files were created
+	csignorePath := filepath.Join(tmpDir, ".csignore")
+	if _, err := os.Stat(csignorePath); os.IsNotExist(err) {
+		t.Error("expected .csignore to be created by init command")
+	}
+
+	schwobDir := filepath.Join(tmpDir, ".contextshrinker")
+	if info, err := os.Stat(schwobDir); os.IsNotExist(err) || !info.IsDir() {
+		t.Error("expected .contextshrinker directory to be created by init command")
+	}
+
+	// Verify content of .csignore
+	content, err := os.ReadFile(csignorePath)
+	if err != nil {
+		t.Fatalf("failed to read .csignore: %v", err)
+	}
+	if !strings.Contains(string(content), ".vitepress") {
+		t.Error("expected .csignore to contain .vitepress")
+	}
+}
+
+func TestReindexForceClearsDatabase(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "contextshrinker-reindex-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldWorkspacePath := workspacePath
+	oldReindexForce := reindexForce
+	oldDbPath := dbPath
+	defer func() {
+		workspacePath = oldWorkspacePath
+		reindexForce = oldReindexForce
+		dbPath = oldDbPath
+	}()
+
+	workspacePath = tmpDir
+	dbPath = filepath.Join(tmpDir, ".contextshrinker", "db")
+	reindexForce = false
+
+	// Initialize the DB first
+	db1, err := getDBAndIngestIfNeeded(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to initialize db first time: %v", err)
+	}
+	// Write a file node to verify it gets cleared
+	err = db1.InsertFile("dummy.go", "hash", 12345)
+	if err != nil {
+		t.Fatalf("failed to write dummy node: %v", err)
+	}
+	db1.Close()
+
+	// Now set reindexForce to true
+	reindexForce = true
+	db2, err := getDBAndIngestIfNeeded(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to open db with reindex force: %v", err)
+	}
+	defer db2.Close()
+
+	// Verify that the file node is gone since the database was recreated
+	exists, err := db2.FileExists("dummy.go")
+	if err != nil {
+		t.Fatalf("failed to check file exists: %v", err)
+	}
+	if exists {
+		t.Error("expected database to be cleared and dummy.go to be deleted, but it still exists")
+	}
+}
+

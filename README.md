@@ -179,13 +179,40 @@ You can use **contextshrinker** to systematically audit coupling, analyze domain
 
 To prevent workspace graph bloat, standard library and dependency folders (`node_modules/`, `vendor/`, `.git/`, etc.) are ignored by default.
 
-To add custom ignores, write them to `.contextshrinker/ignore` (created automatically in your project root on first start). Each line is matched recursively:
+To add custom ignores, initialize the project and generate a `.csignore` file at your workspace root by running:
+```bash
+contextshrinker init
+```
+Each line in `.csignore` is matched recursively:
 ```text
 # Custom project ignores
 *.log
 tmp-output/
 dist/
+.vitepress
 ```
+
+---
+
+## 💡 Best Practices for Large Projects
+
+If you are using **contextshrinker** on a medium-to-large project (e.g., hundreds or thousands of files), running the initial codebase ingestion directly from inside an LLM/agent prompt (like Claude Code or Cursor) can cause agent timeout issues. This happens because the agent has a tight timeout limit (typically 60 seconds) while waiting for the first-time workspace parsing and LSP references resolution to complete.
+
+To prevent this, follow this optimized workflow in your terminal **before** starting the agent:
+
+1. **Initialize the workspace**:
+   Run the initialization command to create the configuration directory and default ignore list:
+   ```bash
+   contextshrinker init
+   ```
+2. **Configure your ignores**:
+   Open the generated `.csignore` file at your workspace root and add any large directories you want to exclude (e.g. documentation sites, test assets, built build folders).
+3. **Build the database offline**:
+   Run the analyze command once from your terminal to build the initial graph database:
+   ```bash
+   contextshrinker analyze
+   ```
+   This performs the heavy lifting of Tree-sitter parsing and LSP semantic cross-referencing offline. Once the database is populated, subsequent agent requests and live state syncs will run incrementally in seconds, preventing any future timeouts!
 
 ---
 

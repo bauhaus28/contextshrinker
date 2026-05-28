@@ -43,6 +43,14 @@ var startCmd = &cobra.Command{
 	},
 }
 
+var initCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Initialize a contextshrinker project and generate .csignore",
+	Run: func(cmd *cobra.Command, args []string) {
+		runInit()
+	},
+}
+
 var analyzeCmd = &cobra.Command{
 	Use:   "analyze",
 	Short: "Analyze the codebase for architectural design quality and output a report",
@@ -109,6 +117,7 @@ func init() {
 
 	promptCmd.AddCommand(architectCmd)
 	rootCmd.AddCommand(startCmd)
+	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(analyzeCmd)
 	rootCmd.AddCommand(promptCmd)
 	rootCmd.AddCommand(searchCmd)
@@ -138,6 +147,11 @@ func getDBAndIngestIfNeeded(workspaceRoot string) (*db.Database, error) {
 		return nil, fmt.Errorf("failed to initialize ignore rules: %w", err)
 	}
 
+	if reindexForce {
+		log.Printf("Reindex requested. Clearing existing database at %s...", resolvedDbPath)
+		_ = os.RemoveAll(resolvedDbPath)
+	}
+
 	database, err := db.NewDatabase(resolvedDbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
@@ -157,6 +171,10 @@ func getDBAndIngestIfNeeded(workspaceRoot string) (*db.Database, error) {
 	}
 
 	if shouldIngest {
+		if database.IsReadOnly() {
+			database.Close()
+			return nil, fmt.Errorf("database is locked by another process (read-only mode) and cannot be reindexed")
+		}
 		log.Println("Database is empty or reindex was requested. Running workspace ingestion...")
 		lspManager := lsp.NewLSPManager(workspaceRoot)
 		defer lspManager.Close()
@@ -208,6 +226,42 @@ func runAnalyze() {
 	}
 
 	fmt.Printf("SUCCESS: Architectural health report written to %s\n", reportPath)
+}
+
+func runInit() {
+	workspaceRoot, err := filepath.Abs(workspacePath)
+	if err != nil {
+		log.Fatalf("Invalid workspace path: %v", err)
+	}
+
+	// Safety check: Refuse to run or initialize in home directory or root directory
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		if workspaceRoot == homeDir || workspaceRoot == "/" {
+			log.Fatalf("Refusing to run/initialize contextshrinker in home directory or root directory: %s", workspaceRoot)
+		}
+	}
+
+	schwobDir := filepath.Join(workspaceRoot, ".contextshrinker")
+	if err := os.MkdirAll(schwobDir, 0755); err != nil {
+		log.Fatalf("Failed to create .contextshrinker configuration directory: %v", err)
+	}
+
+	csignorePath := filepath.Join(workspaceRoot, ".csignore")
+	if _, err := os.Stat(csignorePath); os.IsNotExist(err) {
+		defaultIgnoreContent := `# Custom ignore patterns for contextshrinker
+# Each line is a pattern matched recursively.
+# Standard defaults (node_modules, vendor, testdata, *.test, etc.) are ignored automatically.
+
+.vitepress
+`
+		if err := os.WriteFile(csignorePath, []byte(defaultIgnoreContent), 0644); err != nil {
+			log.Fatalf("Failed to create .csignore file at %s: %v", csignorePath, err)
+		}
+		fmt.Printf("SUCCESS: Initialized contextshrinker workspace at %s\nCreated %s\n", workspaceRoot, csignorePath)
+	} else {
+		fmt.Printf("Workspace already initialized. %s already exists.\n", csignorePath)
+	}
 }
 
 

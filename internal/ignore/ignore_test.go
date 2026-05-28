@@ -39,6 +39,16 @@ func TestIgnoreList_DefaultPatterns(t *testing.T) {
 		{"out/main.exe", true},
 		{".vscode/settings.json", true},
 		{"tmp/data.json", true},
+		{"src/testdata/input.txt", true},
+		{"test_cache/some-cache-file", true},
+		{"test-cache/some-cache-file", true},
+		{".test_cache/some-cache-file", true},
+		{"main.test", true},
+		{"coverage.out", true},
+		{"coverage.coverprofile", true},
+		{"profile.cov", true},
+		{"go.work", true},
+		{"go.work.sum", true},
 	}
 
 	for _, tt := range tests {
@@ -103,16 +113,20 @@ func TestIgnoreList_DotContextShrinkerDirectory(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Verify that loading ignore list automatically creates .contextshrinker/ignore
+	// Verify that loading ignore list does NOT automatically create .csignore or .contextshrinker
 	il, err := NewIgnoreList(tmpDir)
 	if err != nil {
 		t.Fatalf("failed to create ignore list: %v", err)
 	}
 
-	// Verify file was created
-	createdIgnorePath := filepath.Join(tmpDir, ".contextshrinker", "ignore")
-	if _, errStat := os.Stat(createdIgnorePath); os.IsNotExist(errStat) {
-		t.Error("expected .contextshrinker/ignore to be programmatically created, but it was not")
+	csignorePath := filepath.Join(tmpDir, ".csignore")
+	if _, errStat := os.Stat(csignorePath); !os.IsNotExist(errStat) {
+		t.Error("expected .csignore NOT to be programmatically created, but it was")
+	}
+
+	legacyPath1 := filepath.Join(tmpDir, ".contextshrinker", "ignore")
+	if _, errStat := os.Stat(legacyPath1); !os.IsNotExist(errStat) {
+		t.Error("expected .contextshrinker/ignore NOT to be programmatically created, but it was")
 	}
 
 	// Verify default patterns include .contextshrinker and contextshrinker_graph.html
@@ -123,21 +137,49 @@ func TestIgnoreList_DotContextShrinkerDirectory(t *testing.T) {
 		t.Error("expected contextshrinker_graph.html to be ignored by default patterns")
 	}
 
-	// Now append a custom pattern to the newly created ignore file and reload
-	customContent := `
-# Added custom pattern
-*.tmp
-`
-	if errWrite := os.WriteFile(createdIgnorePath, []byte(customContent), 0644); errWrite != nil {
-		t.Fatalf("failed to overwrite ignore file: %v", errWrite)
+	// 1. Test .csignore loader
+	customContent := "*.tmp\n"
+	if errWrite := os.WriteFile(csignorePath, []byte(customContent), 0644); errWrite != nil {
+		t.Fatalf("failed to write .csignore: %v", errWrite)
 	}
 
 	il2, err := NewIgnoreList(tmpDir)
 	if err != nil {
 		t.Fatalf("failed to reload ignore list: %v", err)
 	}
-
 	if !il2.ShouldIgnore("data.tmp") {
-		t.Error("expected data.tmp to be ignored after writing custom pattern to .contextshrinker/ignore")
+		t.Error("expected data.tmp to be ignored after writing custom pattern to .csignore")
+	}
+
+	// Remove .csignore and test legacy .contextshrinker/ignore fallback
+	os.Remove(csignorePath)
+	if errMkdir := os.MkdirAll(filepath.Dir(legacyPath1), 0755); errMkdir != nil {
+		t.Fatalf("failed to create legacy dir: %v", errMkdir)
+	}
+	if errWrite := os.WriteFile(legacyPath1, []byte("*.legacy1\n"), 0644); errWrite != nil {
+		t.Fatalf("failed to write legacy1: %v", errWrite)
+	}
+
+	il3, err := NewIgnoreList(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to load legacy1: %v", err)
+	}
+	if !il3.ShouldIgnore("data.legacy1") {
+		t.Error("expected data.legacy1 to be ignored via legacy fallback 1")
+	}
+
+	// Remove legacy1 and test legacy .contextshrinkerignore fallback
+	os.Remove(legacyPath1)
+	legacyPath2 := filepath.Join(tmpDir, ".contextshrinkerignore")
+	if errWrite := os.WriteFile(legacyPath2, []byte("*.legacy2\n"), 0644); errWrite != nil {
+		t.Fatalf("failed to write legacy2: %v", errWrite)
+	}
+
+	il4, err := NewIgnoreList(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to load legacy2: %v", err)
+	}
+	if !il4.ShouldIgnore("data.legacy2") {
+		t.Error("expected data.legacy2 to be ignored via legacy fallback 2")
 	}
 }
