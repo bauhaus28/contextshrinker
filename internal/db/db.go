@@ -230,6 +230,15 @@ func (d *Database) initSchema() error {
 		}
 	}
 
+	// 3. Migrate schemas (adds missing columns if database already exists)
+	migrations := []string{
+		`ALTER TABLE Function ADD ast_hash STRING`,
+		`ALTER TABLE Class ADD ast_hash STRING`,
+	}
+	for _, m := range migrations {
+		_ = d.runDDL(m) // ignore errors if column already exists or is duplicate
+	}
+
 	return nil
 }
 
