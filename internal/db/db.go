@@ -559,11 +559,11 @@ func (d *Database) SearchCodebase(query string) ([]SearchResult, error) {
 				}
 			}
 			res.Close()
-		} else if firstErr == nil {
+		} else {
 			firstErr = err
 		}
 		stmt.Close()
-	} else if firstErr == nil {
+	} else {
 		firstErr = err
 	}
 

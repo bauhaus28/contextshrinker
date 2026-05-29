@@ -66,7 +66,7 @@ func (s *Server) SetDatabase(database *db.Database, workspaceRoot string) {
 	})
 }
 
-func (s *Server) ensureInitialized(ctx context.Context, session *mcp.ServerSession) error {
+func (s *Server) ensureInitialized(ctx context.Context, _ *mcp.ServerSession) error {
 	select {
 	case <-s.initDone:
 		if s.database == nil {
