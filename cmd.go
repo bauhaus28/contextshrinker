@@ -13,6 +13,7 @@ import (
 	"github.com/bauhaus28/contextshrinker/internal/ignore"
 	"github.com/bauhaus28/contextshrinker/internal/indexer"
 	"github.com/bauhaus28/contextshrinker/internal/lsp"
+	"github.com/bauhaus28/contextshrinker/internal/dashboard"
 	mcp_server "github.com/bauhaus28/contextshrinker/internal/mcp"
 	"github.com/bauhaus28/contextshrinker/internal/report"
 )
@@ -23,6 +24,7 @@ var (
 	reindexForce  bool
 	formatType    string
 	depthLimit    int
+	dashboardPort int
 )
 
 var rootCmd = &cobra.Command{
@@ -107,6 +109,14 @@ var visualizeCmd = &cobra.Command{
 	},
 }
 
+var dashboardCmd = &cobra.Command{
+	Use:   "dashboard",
+	Short: "Start the interactive architectural audit and explanation dashboard",
+	Run: func(cmd *cobra.Command, args []string) {
+		runDashboard()
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&workspacePath, "workspace", ".", "Path to the codebase workspace root")
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "", "Path to store Kuzu database (defaults to .contextshrinker/db)")
@@ -114,6 +124,7 @@ func init() {
 
 	analyzeCmd.Flags().StringVar(&formatType, "format", "markdown", "Output format (markdown)")
 	callChainCmd.Flags().IntVar(&depthLimit, "depth", 3, "Maximum traversal depth for callers (1-5)")
+	dashboardCmd.Flags().IntVar(&dashboardPort, "port", 8080, "Port to run the dashboard server on")
 
 	promptCmd.AddCommand(architectCmd)
 	rootCmd.AddCommand(startCmd)
@@ -124,7 +135,9 @@ func init() {
 	rootCmd.AddCommand(structureCmd)
 	rootCmd.AddCommand(callChainCmd)
 	rootCmd.AddCommand(visualizeCmd)
+	rootCmd.AddCommand(dashboardCmd)
 }
+
 
 func getDBAndIngestIfNeeded(workspaceRoot string) (*db.Database, error) {
 	schwobDir := filepath.Join(workspaceRoot, ".contextshrinker")
@@ -212,7 +225,7 @@ func runAnalyze() {
 
 	log.Println("Analyzing codebase architecture...")
 
-	audit, err := report.RunAudit(database)
+	audit, err := report.RunAudit(database, workspaceRoot)
 	if err != nil {
 		log.Fatalf("Failed to execute audit: %v", err)
 	}
@@ -391,3 +404,27 @@ func runVisualize() {
 	}
 	fmt.Fprintf(os.Stdout, "SUCCESS: Visualization generated at %s\n", path)
 }
+
+func runDashboard() {
+	workspaceRoot, err := filepath.Abs(workspacePath)
+	if err != nil {
+		log.Fatalf("Invalid workspace path: %v", err)
+	}
+
+	database, err := getDBAndIngestIfNeeded(workspaceRoot)
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer database.Close()
+
+	ignoreList, err := ignore.NewIgnoreList(workspaceRoot)
+	if err != nil {
+		log.Fatalf("Failed to initialize ignore rules: %v", err)
+	}
+
+	err = dashboard.StartServer(workspaceRoot, database, ignoreList, dashboardPort)
+	if err != nil {
+		log.Fatalf("Dashboard server failed: %v", err)
+	}
+}
+

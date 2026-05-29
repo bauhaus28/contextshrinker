@@ -32,6 +32,7 @@ type FunctionEntity struct {
 	EndLine    int64
 	Docstring  string
 	IsExported bool
+	ASTHash    string
 }
 
 type ClassEntity struct {
@@ -40,6 +41,7 @@ type ClassEntity struct {
 	FilePath     string
 	Docstring    string
 	TypeCategory string // e.g. "class", "struct", "interface"
+	ASTHash      string
 }
 
 type VariableEntity struct {
@@ -203,8 +205,8 @@ func (d *Database) initSchema() error {
 	// 1. Create Node Tables
 	nodesDDL := []string{
 		`CREATE NODE TABLE File (path STRING, hash STRING, last_modified INT64, PRIMARY KEY (path))`,
-		`CREATE NODE TABLE Function (id STRING, name STRING, file_path STRING, start_line INT64, end_line INT64, docstring STRING, is_exported BOOLEAN, PRIMARY KEY (id))`,
-		`CREATE NODE TABLE Class (id STRING, name STRING, file_path STRING, docstring STRING, type_category STRING, PRIMARY KEY (id))`,
+		`CREATE NODE TABLE Function (id STRING, name STRING, file_path STRING, start_line INT64, end_line INT64, docstring STRING, is_exported BOOLEAN, ast_hash STRING, PRIMARY KEY (id))`,
+		`CREATE NODE TABLE Class (id STRING, name STRING, file_path STRING, docstring STRING, type_category STRING, ast_hash STRING, PRIMARY KEY (id))`,
 		`CREATE NODE TABLE Variable (id STRING, name STRING, file_path STRING, type_hint STRING, PRIMARY KEY (id))`,
 	}
 
@@ -283,7 +285,7 @@ func (d *Database) InsertFile(path, hash string, lastModified int64) error {
 func (d *Database) InsertFunction(fn FunctionEntity) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	stmt, err := d.conn.Prepare(`CREATE (fn:Function {id: $id, name: $name, file_path: $file_path, start_line: $start_line, end_line: $end_line, docstring: $docstring, is_exported: $is_exported})`)
+	stmt, err := d.conn.Prepare(`CREATE (fn:Function {id: $id, name: $name, file_path: $file_path, start_line: $start_line, end_line: $end_line, docstring: $docstring, is_exported: $is_exported, ast_hash: $ast_hash})`)
 	if err != nil {
 		return err
 	}
@@ -297,6 +299,7 @@ func (d *Database) InsertFunction(fn FunctionEntity) error {
 		"end_line":    fn.EndLine,
 		"docstring":   fn.Docstring,
 		"is_exported": fn.IsExported,
+		"ast_hash":    fn.ASTHash,
 	})
 	if err != nil {
 		return err
@@ -309,7 +312,7 @@ func (d *Database) InsertFunction(fn FunctionEntity) error {
 func (d *Database) InsertClass(c ClassEntity) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	stmt, err := d.conn.Prepare(`CREATE (c:Class {id: $id, name: $name, file_path: $file_path, docstring: $docstring, type_category: $type_category})`)
+	stmt, err := d.conn.Prepare(`CREATE (c:Class {id: $id, name: $name, file_path: $file_path, docstring: $docstring, type_category: $type_category, ast_hash: $ast_hash})`)
 	if err != nil {
 		return err
 	}
@@ -321,6 +324,7 @@ func (d *Database) InsertClass(c ClassEntity) error {
 		"file_path":     c.FilePath,
 		"docstring":     c.Docstring,
 		"type_category": c.TypeCategory,
+		"ast_hash":      c.ASTHash,
 	})
 	if err != nil {
 		return err
@@ -1024,3 +1028,379 @@ func (d *Database) GetDeadCode() ([]DeadCodeResult, error) {
 	}
 	return results, nil
 }
+
+type CloneGroup struct {
+	ASTHash   string         `json:"ast_hash"`
+	Functions []SearchResult `json:"functions"`
+}
+
+type BoundaryRule struct {
+	FromPattern string `json:"from_pattern"`
+	ToPattern   string `json:"to_pattern"`
+}
+
+type BoundaryViolation struct {
+	Type         string `json:"type"` // "CALL" or "IMPORT"
+	FromPath     string `json:"from_path"`
+	FromSymbol   string `json:"from_symbol,omitempty"`
+	ToPath       string `json:"to_path"`
+	ToSymbol     string `json:"to_symbol,omitempty"`
+	RuleViolated string `json:"rule_violated"`
+}
+
+// GetClones finds functions that have the exact same structural AST hash.
+func (d *Database) GetClones() ([]CloneGroup, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	query := `MATCH (fn:Function)
+WHERE fn.ast_hash <> "" AND fn.ast_hash IS NOT NULL
+WITH fn.ast_hash AS hash, count(fn) AS cnt
+WHERE cnt > 1
+MATCH (fn2:Function {ast_hash: hash})
+RETURN fn2.name, fn2.file_path, fn2.start_line, hash
+ORDER BY hash`
+
+	stmt, err := d.conn.Prepare(query)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+
+	res, err := d.conn.Execute(stmt, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+
+	groupsMap := make(map[string][]SearchResult)
+	for res.HasNext() {
+		tuple, err := res.Next()
+		if err != nil {
+			continue
+		}
+		m, err := tuple.GetAsMap()
+		if err == nil {
+			hash := mapStr(m, "hash")
+			groupsMap[hash] = append(groupsMap[hash], SearchResult{
+				Type:      "Function",
+				Name:      mapStr(m, "fn2.name"),
+				FilePath:  mapStr(m, "fn2.file_path"),
+				StartLine: mapInt64(m, "fn2.start_line"),
+			})
+		}
+		tuple.Close()
+	}
+
+	var cloneGroups []CloneGroup
+	for hash, functions := range groupsMap {
+		cloneGroups = append(cloneGroups, CloneGroup{
+			ASTHash:   hash,
+			Functions: functions,
+		})
+	}
+	return cloneGroups, nil
+}
+
+// GetBoundaryViolations identifies calls and imports that violate layer/module restrictions.
+func (d *Database) GetBoundaryViolations(rules []BoundaryRule) ([]BoundaryViolation, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var violations []BoundaryViolation
+
+	// 1. Check CALLS edges
+	stmtCalls, err := d.conn.Prepare(`MATCH (fn1:Function)-[:CALLS]->(fn2:Function) RETURN fn1.name, fn1.file_path, fn1.start_line, fn2.name, fn2.file_path`)
+	if err == nil {
+		resCalls, err := d.conn.Execute(stmtCalls, nil)
+		if err == nil {
+			for resCalls.HasNext() {
+				tuple, err := resCalls.Next()
+				if err != nil {
+					continue
+				}
+				m, err := tuple.GetAsMap()
+				if err == nil {
+					f1 := mapStr(m, "fn1.file_path")
+					f2 := mapStr(m, "fn2.file_path")
+					for _, rule := range rules {
+						if strings.Contains(f1, rule.FromPattern) && strings.Contains(f2, rule.ToPattern) {
+							violations = append(violations, BoundaryViolation{
+								Type:         "CALL",
+								FromPath:     f1,
+								FromSymbol:   mapStr(m, "fn1.name"),
+								ToPath:       f2,
+								ToSymbol:     mapStr(m, "fn2.name"),
+								RuleViolated: fmt.Sprintf("%s -> %s", rule.FromPattern, rule.ToPattern),
+							})
+						}
+					}
+				}
+				tuple.Close()
+			}
+			resCalls.Close()
+		}
+		stmtCalls.Close()
+	}
+
+	// 2. Check IMPORTS edges
+	stmtImports, err := d.conn.Prepare(`MATCH (f1:File)-[:IMPORTS]->(f2:File) RETURN f1.path, f2.path`)
+	if err == nil {
+		resImports, err := d.conn.Execute(stmtImports, nil)
+		if err == nil {
+			for resImports.HasNext() {
+				tuple, err := resImports.Next()
+				if err != nil {
+					continue
+				}
+				m, err := tuple.GetAsMap()
+				if err == nil {
+					f1 := mapStr(m, "f1.path")
+					f2 := mapStr(m, "f2.path")
+					for _, rule := range rules {
+						if strings.Contains(f1, rule.FromPattern) && strings.Contains(f2, rule.ToPattern) {
+							violations = append(violations, BoundaryViolation{
+								Type:         "IMPORT",
+								FromPath:     f1,
+								ToPath:       f2,
+								RuleViolated: fmt.Sprintf("%s -> %s", rule.FromPattern, rule.ToPattern),
+							})
+						}
+					}
+				}
+				tuple.Close()
+			}
+			resImports.Close()
+		}
+		stmtImports.Close()
+	}
+
+	return violations, nil
+}
+
+// GetStats returns total function count, total class count, interface count, and concrete class count.
+func (d *Database) GetStats() (int64, int64, int64, int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var funcCount, classCount, interfaceCount, concreteCount int64
+
+	stmt1, err := d.conn.Prepare(`MATCH (fn:Function) RETURN count(fn) AS cnt`)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer stmt1.Close()
+	res1, err := d.conn.Execute(stmt1, nil)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer res1.Close()
+	if res1.HasNext() {
+		t, err := res1.Next()
+		if err == nil && t != nil {
+			m, err := t.GetAsMap()
+			if err == nil {
+				funcCount = mapInt64(m, "cnt")
+			}
+			t.Close()
+		}
+	}
+
+	stmt2, err := d.conn.Prepare(`MATCH (c:Class) RETURN count(c) AS cnt`)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer stmt2.Close()
+	res2, err := d.conn.Execute(stmt2, nil)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer res2.Close()
+	if res2.HasNext() {
+		t, err := res2.Next()
+		if err == nil && t != nil {
+			m, err := t.GetAsMap()
+			if err == nil {
+				classCount = mapInt64(m, "cnt")
+			}
+			t.Close()
+		}
+	}
+
+	stmt3, err := d.conn.Prepare(`MATCH (c:Class) WHERE c.type_category = 'interface' RETURN count(c) AS cnt`)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer stmt3.Close()
+	res3, err := d.conn.Execute(stmt3, nil)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer res3.Close()
+	if res3.HasNext() {
+		t, err := res3.Next()
+		if err == nil && t != nil {
+			m, err := t.GetAsMap()
+			if err == nil {
+				interfaceCount = mapInt64(m, "cnt")
+			}
+			t.Close()
+		}
+	}
+
+	stmt4, err := d.conn.Prepare(`MATCH (c:Class) WHERE c.type_category = 'class' OR c.type_category = 'struct' RETURN count(c) AS cnt`)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer stmt4.Close()
+	res4, err := d.conn.Execute(stmt4, nil)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer res4.Close()
+	if res4.HasNext() {
+		t, err := res4.Next()
+		if err == nil && t != nil {
+			m, err := t.GetAsMap()
+			if err == nil {
+				concreteCount = mapInt64(m, "cnt")
+			}
+			t.Close()
+		}
+	}
+
+	return funcCount, classCount, interfaceCount, concreteCount, nil
+}
+
+// GetFunctionRange retrieves the file path, start line, and end line for a function by its ID.
+func (d *Database) GetFunctionRange(id string) (string, int64, int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	stmt, err := d.conn.Prepare(`MATCH (fn:Function {id: $id}) RETURN fn.file_path, fn.start_line, fn.end_line`)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	defer stmt.Close()
+
+	res, err := d.conn.Execute(stmt, map[string]any{"id": id})
+	if err != nil {
+		return "", 0, 0, err
+	}
+	defer res.Close()
+
+	if res.HasNext() {
+		t, err := res.Next()
+		if err == nil && t != nil {
+			defer t.Close()
+			m, err := t.GetAsMap()
+			if err == nil {
+				return mapStr(m, "fn.file_path"), mapInt64(m, "fn.start_line"), mapInt64(m, "fn.end_line"), nil
+			}
+		}
+	}
+
+	return "", 0, 0, fmt.Errorf("function with ID %q not found", id)
+}
+
+type FileEntity struct {
+	Path string
+	Hash string
+}
+
+type DiffData struct {
+	Files       []FileEntity
+	Functions   []FunctionEntity
+	Classes     []ClassEntity
+	Variables   []VariableEntity
+	ContainsRel map[string]string // maps child ID to parent class name
+	Edges       []VisEdge
+}
+
+// GetDiffData returns all database data needed for diffing.
+func (d *Database) GetDiffData() (*DiffData, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	data := &DiffData{
+		ContainsRel: make(map[string]string),
+	}
+
+	// 1. Files
+	d.queryRows(`MATCH (f:File) RETURN f.path, f.hash`, func(m map[string]any) {
+		data.Files = append(data.Files, FileEntity{
+			Path: mapStr(m, "f.path"),
+			Hash: mapStr(m, "f.hash"),
+		})
+	})
+
+	// 2. Functions
+	d.queryRows(`MATCH (fn:Function) RETURN fn.id, fn.name, fn.file_path, fn.ast_hash`, func(m map[string]any) {
+		data.Functions = append(data.Functions, FunctionEntity{
+			ID:       mapStr(m, "fn.id"),
+			Name:     mapStr(m, "fn.name"),
+			FilePath: mapStr(m, "fn.file_path"),
+			ASTHash:  mapStr(m, "fn.ast_hash"),
+		})
+	})
+
+	// 3. Classes
+	d.queryRows(`MATCH (c:Class) RETURN c.id, c.name, c.file_path, c.ast_hash`, func(m map[string]any) {
+		data.Classes = append(data.Classes, ClassEntity{
+			ID:       mapStr(m, "c.id"),
+			Name:     mapStr(m, "c.name"),
+			FilePath: mapStr(m, "c.file_path"),
+			ASTHash:  mapStr(m, "c.ast_hash"),
+		})
+	})
+
+	// 4. Variables
+	d.queryRows(`MATCH (v:Variable) RETURN v.id, v.name, v.file_path`, func(m map[string]any) {
+		data.Variables = append(data.Variables, VariableEntity{
+			ID:       mapStr(m, "v.id"),
+			Name:     mapStr(m, "v.name"),
+			FilePath: mapStr(m, "v.file_path"),
+		})
+	})
+
+	// 5. CONTAINS relationship from Class to Function/Variable
+	d.queryRows(`MATCH (c:Class)-[:CONTAINS]->(e) RETURN c.name, e.id`, func(m map[string]any) {
+		cName := mapStr(m, "c.name")
+		eID := mapStr(m, "e.id")
+		data.ContainsRel[eID] = cName
+	})
+
+	// 6. Edges (CALLS, IMPORTS, IMPLEMENTS, CONTAINS)
+	edgeQueries := []struct {
+		query   string
+		fromKey string
+		toKey   string
+		label   string
+	}{
+		{`MATCH (a:Function)-[:CALLS]->(b:Function) RETURN a.id, b.id`, "a.id", "b.id", "CALLS"},
+		{`MATCH (a:File)-[:CONTAINS]->(b:Function) RETURN a.path, b.id`, "a.path", "b.id", "CONTAINS"},
+		{`MATCH (a:File)-[:CONTAINS]->(b:Class) RETURN a.path, b.id`, "a.path", "b.id", "CONTAINS"},
+		{`MATCH (a:File)-[:CONTAINS]->(b:Variable) RETURN a.path, b.id`, "a.path", "b.id", "CONTAINS"},
+		{`MATCH (a:Class)-[:CONTAINS]->(b:Function) RETURN a.id, b.id`, "a.id", "b.id", "CONTAINS"},
+		{`MATCH (a:Class)-[:CONTAINS]->(b:Variable) RETURN a.id, b.id`, "a.id", "b.id", "CONTAINS"},
+		{`MATCH (a:File)-[:IMPORTS]->(b:File) RETURN a.path, b.path`, "a.path", "b.path", "IMPORTS"},
+		{`MATCH (a:File)-[:IMPORTS]->(b:Class) RETURN a.path, b.id`, "a.path", "b.id", "IMPORTS"},
+		{`MATCH (a:File)-[:IMPORTS]->(b:Function) RETURN a.path, b.id`, "a.path", "b.id", "IMPORTS"},
+		{`MATCH (a:File)-[:IMPORTS]->(b:Variable) RETURN a.path, b.id`, "a.path", "b.id", "IMPORTS"},
+		{`MATCH (a:Class)-[:IMPLEMENTS]->(b:Class) RETURN a.id, b.id`, "a.id", "b.id", "IMPLEMENTS"},
+	}
+	for _, eq := range edgeQueries {
+		eq := eq
+		d.queryRows(eq.query, func(m map[string]any) {
+			data.Edges = append(data.Edges, VisEdge{
+				From:  mapStr(m, eq.fromKey),
+				To:    mapStr(m, eq.toKey),
+				Label: eq.label,
+			})
+		})
+	}
+
+	return data, nil
+}
+
+

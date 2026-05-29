@@ -379,3 +379,102 @@ func TestReindexForceClearsDatabase(t *testing.T) {
 	}
 }
 
+func TestClonesAndDeadCode(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "contextshrinker-test-clones-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "db")
+
+	database, err := db.NewDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+
+	// Insert files
+	_ = database.InsertFile("file1.go", "hash1", 100)
+	_ = database.InsertFile("file2.go", "hash2", 200)
+
+	// Insert functions with identical AST hashes (clones)
+	fn1 := db.FunctionEntity{
+		ID:         "file1.go:10:0:helperA",
+		Name:       "helperA",
+		FilePath:   "file1.go",
+		ASTHash:    "abcde12345",
+		IsExported: false,
+	}
+	fn2 := db.FunctionEntity{
+		ID:         "file2.go:20:0:helperB",
+		Name:       "helperB",
+		FilePath:   "file2.go",
+		ASTHash:    "abcde12345", // same hash
+		IsExported: false,
+	}
+	// Insert an unexported function with no calls (dead code)
+	fn3 := db.FunctionEntity{
+		ID:         "file1.go:30:0:unusedFunc",
+		Name:       "unusedFunc",
+		FilePath:   "file1.go",
+		ASTHash:    "xyz789",
+		IsExported: false,
+	}
+	// Insert an exported function (not considered dead code even if not called)
+	fn4 := db.FunctionEntity{
+		ID:         "file1.go:40:0:ExportedFunc",
+		Name:       "ExportedFunc",
+		FilePath:   "file1.go",
+		ASTHash:    "qwerty",
+		IsExported: true,
+	}
+
+	_ = database.InsertFunction(fn1)
+	_ = database.InsertFunction(fn2)
+	_ = database.InsertFunction(fn3)
+	_ = database.InsertFunction(fn4)
+
+	// Verify GetClones finds the clones
+	clones, err := database.GetClones()
+	if err != nil {
+		t.Fatalf("failed to get clones: %v", err)
+	}
+	if len(clones) != 1 {
+		t.Errorf("expected 1 clone group, got %d", len(clones))
+	} else {
+		group := clones[0]
+		if group.ASTHash != "abcde12345" {
+			t.Errorf("expected clone group hash 'abcde12345', got %q", group.ASTHash)
+		}
+		if len(group.Functions) != 2 {
+			t.Errorf("expected 2 functions in clone group, got %d", len(group.Functions))
+		}
+	}
+
+	// Verify GetDeadCode finds unusedFunc but not ExportedFunc
+	dead, err := database.GetDeadCode()
+	if err != nil {
+		t.Fatalf("failed to get dead code: %v", err)
+	}
+
+	foundUnused := false
+	foundExported := false
+	for _, fn := range dead {
+		if fn.FunctionName == "unusedFunc" {
+			foundUnused = true
+		}
+		if fn.FunctionName == "ExportedFunc" {
+			foundExported = true
+		}
+	}
+
+	if !foundUnused {
+		t.Error("expected unusedFunc to be flagged as dead code")
+	}
+	if foundExported {
+		t.Error("ExportedFunc should not be flagged as dead code")
+	}
+}
+
+

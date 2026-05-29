@@ -2,7 +2,10 @@ package parser
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +21,11 @@ import (
 	"github.com/bauhaus28/contextshrinker/internal/db"
 )
 
+type ImportDecl struct {
+	SourcePath string
+	Path       string
+}
+
 type ParsedResult struct {
 	FilePath   string
 	Functions  []db.FunctionEntity
@@ -25,6 +33,7 @@ type ParsedResult struct {
 	Variables  []db.VariableEntity
 	Contains   []ContainsRel
 	Implements []ImplementsRel
+	Imports    []ImportDecl
 }
 
 type ContainsRel struct {
@@ -45,9 +54,11 @@ func ParseFile(filePath string) (*ParsedResult, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	ext := strings.ToLower(filepath.Ext(filePath))
+	return ParseContent(content, ext, filePath)
+}
 
+func ParseContent(content []byte, ext string, filePath string) (*ParsedResult, error) {
 	var lang *sitter.Language
 
 	switch ext {
@@ -115,6 +126,7 @@ func walkAST(node *sitter.Node, source []byte, res *ParsedResult, currentClassID
 				EndLine:    int64(endPoint.Row + 1),
 				Docstring:  doc,
 				IsExported: isExported,
+				ASTHash:    computeASTHash(node),
 			}
 			res.Functions = append(res.Functions, fn)
 
@@ -171,6 +183,7 @@ func walkAST(node *sitter.Node, source []byte, res *ParsedResult, currentClassID
 				FilePath:     res.FilePath,
 				Docstring:    doc,
 				TypeCategory: category,
+				ASTHash:      computeASTHash(node),
 			}
 			res.Classes = append(res.Classes, c)
 
@@ -225,6 +238,92 @@ func walkAST(node *sitter.Node, source []byte, res *ParsedResult, currentClassID
 					ParentType: "File",
 					ChildType:  "Variable",
 				})
+			}
+		}
+
+	case "import_spec":
+		pathNode := node.ChildByFieldName("path")
+		if pathNode == nil {
+			for i := 0; i < int(node.ChildCount()); i++ {
+				child := node.Child(i)
+				if child.Type() == "interpreted_string_literal" || child.Type() == "raw_string_literal" {
+					pathNode = child
+					break
+				}
+			}
+		}
+		if pathNode != nil {
+			pathStr := string(source[pathNode.StartByte():pathNode.EndByte()])
+			pathStr = strings.Trim(pathStr, "\"`")
+			res.Imports = append(res.Imports, ImportDecl{
+				SourcePath: res.FilePath,
+				Path:       pathStr,
+			})
+		}
+
+	case "import_statement":
+		sourceNode := node.ChildByFieldName("source")
+		if sourceNode != nil {
+			pathStr := string(source[sourceNode.StartByte():sourceNode.EndByte()])
+			pathStr = strings.Trim(pathStr, `"'`)
+			res.Imports = append(res.Imports, ImportDecl{
+				SourcePath: res.FilePath,
+				Path:       pathStr,
+			})
+		} else {
+			extractDottedNames(node, source, res)
+		}
+
+	case "import_from_statement":
+		moduleNode := node.ChildByFieldName("module_name")
+		if moduleNode != nil {
+			moduleStr := strings.TrimSpace(string(source[moduleNode.StartByte():moduleNode.EndByte()]))
+			res.Imports = append(res.Imports, ImportDecl{
+				SourcePath: res.FilePath,
+				Path:       moduleStr,
+			})
+		}
+
+	case "import_declaration":
+		var pathStr string
+		nameNode := node.ChildByFieldName("name")
+		if nameNode != nil {
+			pathStr = string(source[nameNode.StartByte():nameNode.EndByte()])
+		} else {
+			for i := 0; i < int(node.ChildCount()); i++ {
+				child := node.Child(i)
+				t := child.Type()
+				if t == "scoped_identifier" || t == "identifier" || t == "asterisk" {
+					pathStr = string(source[child.StartByte():child.EndByte()])
+					break
+				}
+			}
+		}
+		pathStr = strings.TrimSpace(pathStr)
+		if pathStr != "" {
+			res.Imports = append(res.Imports, ImportDecl{
+				SourcePath: res.FilePath,
+				Path:       pathStr,
+			})
+		}
+
+	case "call_expression":
+		functionNode := node.ChildByFieldName("function")
+		if functionNode != nil && string(source[functionNode.StartByte():functionNode.EndByte()]) == "require" {
+			argumentsNode := node.ChildByFieldName("arguments")
+			if argumentsNode != nil && argumentsNode.ChildCount() > 0 {
+				for i := 0; i < int(argumentsNode.ChildCount()); i++ {
+					child := argumentsNode.Child(i)
+					if child.Type() == "string" {
+						pathStr := string(source[child.StartByte():child.EndByte()])
+						pathStr = strings.Trim(pathStr, `"'`)
+						res.Imports = append(res.Imports, ImportDecl{
+							SourcePath: res.FilePath,
+							Path:       pathStr,
+						})
+						break
+					}
+				}
 			}
 		}
 	}
@@ -324,6 +423,48 @@ func extractInheritance(node *sitter.Node, source []byte, classID string, res *P
 				}
 			}
 		}
+	}
+}
+
+func computeASTHash(node *sitter.Node) string {
+	if node == nil {
+		return ""
+	}
+	hash := sha256.New()
+	writeNodeStructure(node, hash)
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func writeNodeStructure(node *sitter.Node, hash io.Writer) {
+	if node == nil {
+		return
+	}
+	t := node.Type()
+	if t == "comment" || t == "line_comment" || t == "block_comment" {
+		return
+	}
+	_, _ = hash.Write([]byte(t))
+	for i := 0; i < int(node.ChildCount()); i++ {
+		writeNodeStructure(node.Child(i), hash)
+	}
+}
+
+func extractDottedNames(node *sitter.Node, source []byte, res *ParsedResult) {
+	if node == nil {
+		return
+	}
+	if node.Type() == "dotted_name" {
+		name := strings.TrimSpace(string(source[node.StartByte():node.EndByte()]))
+		if name != "" {
+			res.Imports = append(res.Imports, ImportDecl{
+				SourcePath: res.FilePath,
+				Path:       name,
+			})
+		}
+		return
+	}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		extractDottedNames(node.Child(i), source, res)
 	}
 }
 

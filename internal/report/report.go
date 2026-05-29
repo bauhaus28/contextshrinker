@@ -15,9 +15,10 @@ type HealthAudit struct {
 	BlackHoles  []db.BlackHoleResult
 	Cycles      []db.CycleResult
 	DeadCode    []db.DeadCodeResult
+	AIMetrics   *AIMetrics
 }
 
-func RunAudit(database *db.Database) (*HealthAudit, error) {
+func RunAudit(database *db.Database, workspaceRoot string) (*HealthAudit, error) {
 	godObjects, err := database.GetGodObjects()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get God Objects: %w", err)
@@ -38,14 +39,22 @@ func RunAudit(database *db.Database) (*HealthAudit, error) {
 		return nil, fmt.Errorf("failed to run dead code detection: %w", err)
 	}
 
+	rules, _ := LoadBoundaryRules(workspaceRoot)
+	aiMetrics, err := CalculateAIMetrics(database, rules)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate AI metrics: %w", err)
+	}
+
 	return &HealthAudit{
 		GeneratedAt: time.Now(),
 		GodObjects:  godObjects,
 		BlackHoles:  blackHoles,
 		Cycles:      cycles,
 		DeadCode:    deadCode,
+		AIMetrics:   aiMetrics,
 	}, nil
 }
+
 
 func (audit *HealthAudit) RenderMarkdown(workspaceRoot string) string {
 	var sb strings.Builder
@@ -113,6 +122,46 @@ func (audit *HealthAudit) RenderMarkdown(workspaceRoot string) string {
 			sb.WriteString(fmt.Sprintf("| `%s` | `%s` |\n", dc.FunctionName, relPath))
 		}
 		sb.WriteString("\n")
+	}
+
+	// 5. AI Metrics
+	sb.WriteString("## 5. AI-Generated Code Audit Metrics\n")
+	sb.WriteString("Assesses structural duplication, unused boilerplate, and boundaries violations introduced in the codebase.\n\n")
+	if audit.AIMetrics != nil {
+		sb.WriteString("| Metric | Value | Danger Threshold | Status |\n")
+		sb.WriteString("|---|---|---|---|\n")
+
+		scrStatus := "✅ Pass"
+		if audit.AIMetrics.SCR > 0.10 {
+			scrStatus = "⚠️ Danger"
+		}
+		sb.WriteString(fmt.Sprintf("| **Structural Clone Ratio (SCR)** | `%.2f%%` (%d/%d cloned functions) | `>10.00%%` | %s |\n",
+			audit.AIMetrics.SCR*100, audit.AIMetrics.ClonedFunctions, audit.AIMetrics.TotalFunctions, scrStatus))
+
+		dcrStatus := "✅ Pass"
+		if audit.AIMetrics.DCR > 0.05 {
+			dcrStatus = "⚠️ Danger"
+		}
+		sb.WriteString(fmt.Sprintf("| **Dead Code Ratio (DCR)** | `%.2f%%` (%d/%d dead functions) | `>5.00%%` | %s |\n",
+			audit.AIMetrics.DCR*100, audit.AIMetrics.DeadFunctions, audit.AIMetrics.TotalFunctions, dcrStatus))
+
+		bviStatus := "✅ Pass"
+		if audit.AIMetrics.BVI > 0 {
+			bviStatus = "⚠️ Danger"
+		}
+		sb.WriteString(fmt.Sprintf("| **Boundary Violations Index (BVI)** | `%d` violations | `>0` | %s |\n",
+			audit.AIMetrics.BVI, bviStatus))
+
+		aoiStatus := "✅ Pass"
+		if audit.AIMetrics.AOI > 0.50 {
+			aoiStatus = "⚠️ Danger"
+		}
+		sb.WriteString(fmt.Sprintf("| **Abstraction Overkill Index (AOI)** | `%.2f` (%d interfaces vs %d concrete) | `>0.50` | %s |\n",
+			audit.AIMetrics.AOI, audit.AIMetrics.InterfaceCount, audit.AIMetrics.ConcreteCount, aoiStatus))
+
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("*No AI metrics computed.*\n\n")
 	}
 
 	return sb.String()

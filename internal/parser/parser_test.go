@@ -15,9 +15,14 @@ func TestParseFile_Go(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	content := `package test
+import "fmt"
+import (
+	"os"
+)
 
 // Greet is a exported function that says hello.
 func Greet(name string) string {
+	fmt.Println("logging")
 	return "Hello " + name
 }
 
@@ -44,6 +49,13 @@ func (u *User) GetAge() int {
 
 	if len(res.Functions) != 2 {
 		t.Errorf("expected 2 functions, got %d", len(res.Functions))
+	}
+
+	// Verify ASTHash on functions
+	for _, fn := range res.Functions {
+		if fn.ASTHash == "" {
+			t.Errorf("expected function %s to have ASTHash, but it was empty", fn.Name)
+		}
 	}
 
 	// Verify Greet
@@ -75,6 +87,21 @@ func (u *User) GetAge() int {
 		}
 		if c.TypeCategory != "struct" {
 			t.Errorf("expected category 'struct', got %q", c.TypeCategory)
+		}
+		if c.ASTHash == "" {
+			t.Error("expected Class User to have ASTHash, but it was empty")
+		}
+	}
+
+	// Verify Imports
+	if len(res.Imports) != 2 {
+		t.Errorf("expected 2 imports, got %d: %+v", len(res.Imports), res.Imports)
+	} else {
+		if res.Imports[0].Path != "fmt" {
+			t.Errorf("expected first import to be 'fmt', got %q", res.Imports[0].Path)
+		}
+		if res.Imports[1].Path != "os" {
+			t.Errorf("expected second import to be 'os', got %q", res.Imports[1].Path)
 		}
 	}
 }

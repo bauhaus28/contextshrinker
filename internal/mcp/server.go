@@ -40,7 +40,7 @@ func NewServer(initializedHandler func(context.Context, *mcp.InitializedRequest)
 	s := &Server{
 		mcpServer: mcp.NewServer(&mcp.Implementation{
 			Name:    "contextshrinker",
-			Version: "1.0.0",
+			Version: "0.1.1",
 		}, &mcp.ServerOptions{
 			InitializedHandler: initializedHandler,
 		}),
@@ -212,7 +212,7 @@ func (s *Server) registerTools() {
 			return nil, nil, fmt.Errorf("initialization failed: %w", err)
 		}
 
-		audit, err := report.RunAudit(s.database)
+		audit, err := report.RunAudit(s.database, s.workspaceRoot)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to execute audit: %w", err)
 		}

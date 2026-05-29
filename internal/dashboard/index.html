@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ContextShrinker Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(17, 24, 39, 0.75);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --accent-purple: #8b5cf6;
+            --accent-glow: rgba(139, 92, 246, 0.35);
+            --danger-color: #ef4444;
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 2rem;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            z-index: 100;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #a78bfa, #818cf8);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        h1::before {
+            content: '';
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background: var(--accent-purple);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--accent-purple);
+        }
+
+        .diff-controls {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        input, button, select {
+            font-family: inherit;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        input:focus, select:focus {
+            border-color: var(--accent-purple);
+            box-shadow: 0 0 0 2px var(--accent-glow);
+        }
+
+        button {
+            cursor: pointer;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--accent-purple), #6366f1);
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .main-container {
+            display: flex;
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #network-container {
+            flex: 1;
+            height: 100%;
+            background: radial-gradient(circle at center, #111827 0%, #030712 100%);
+        }
+
+        .sidebar {
+            width: 380px;
+            background: var(--panel-bg);
+            backdrop-filter: blur(16px);
+            border-left: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            z-index: 50;
+            box-shadow: -10px 0 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .panel-section {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .panel-section h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #f3f4f6;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.75rem;
+        }
+
+        .metric-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+        }
+
+        .metric-card.pass::before { background-color: var(--success-color); }
+        .metric-card.danger::before { background-color: var(--danger-color); }
+
+        .metric-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .metric-detail {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+        }
+
+        .inspector-placeholder {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            text-align: center;
+            padding: 2rem 0;
+            border: 1px dashed var(--border-color);
+            border-radius: 8px;
+        }
+
+        .inspector-details {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .detail-row {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .detail-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .detail-value {
+            font-size: 0.95rem;
+            font-weight: 500;
+            word-break: break-all;
+        }
+
+        .tag {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .tag.function { background: rgba(139, 92, 246, 0.2); color: #c084fc; border: 1px solid rgba(139, 92, 246, 0.4); }
+        .tag.class { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+        .tag.file { background: rgba(156, 163, 175, 0.2); color: #e5e7eb; border: 1px solid rgba(156, 163, 175, 0.4); }
+        .tag.variable { background: rgba(249, 115, 22, 0.2); color: #fb923c; border: 1px solid rgba(249, 115, 22, 0.4); }
+
+        .explanation-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        #explanation-text {
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        #explanation-text pre {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.5rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin: 0.5rem 0;
+        }
+
+        #explanation-text code {
+            font-family: monospace;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.1rem 0.3rem;
+            border-radius: 3px;
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 1.5rem;
+            left: 1.5rem;
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            padding: 1rem;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            z-index: 40;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .legend-color {
+            width: 14px;
+            height: 14px;
+            border-radius: 4px;
+        }
+
+        .loader {
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top: 3px solid var(--accent-purple);
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Tooltip style */
+        div.vis-tooltip {
+            background-color: rgba(17, 24, 39, 0.95) !important;
+            border: 1px solid var(--border-color) !important;
+            color: var(--text-primary) !important;
+            font-family: 'Outfit', sans-serif !important;
+            padding: 8px 12px !important;
+            border-radius: 8px !important;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5) !important;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>ContextShrinker</h1>
+        <div class="diff-controls">
+            <input type="text" id="git-ref" placeholder="Compare Git branch/ref (e.g. main)" value="">
+            <button id="btn-diff" onclick="runDiff()">
+                <span>Compute Diff</span>
+            </button>
+            <button id="btn-reset" onclick="resetGraph()" style="background: rgba(255, 255, 255, 0.08); color: var(--text-primary); display: none;">
+                Reset
+            </button>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <!-- Legend overlay -->
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color" style="background-color: #8b5cf6;"></div>
+                <span>Function</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background-color: #10b981;"></div>
+                <span>Class / Struct</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background-color: #4b5563;"></div>
+                <span>File</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background-color: #f97316;"></div>
+                <span>Variable</span>
+            </div>
+            <!-- Diff legend, visible when active -->
+            <div id="diff-legend" style="display: none; border-top: 1px solid var(--border-color); padding-top: 0.5rem; margin-top: 0.25rem; flex-direction: column; gap: 0.5rem;">
+                <div class="legend-item">
+                    <div class="legend-color" style="background-color: #00ff88; box-shadow: 0 0 8px #00ff88;"></div>
+                    <span>Added (Git)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background-color: #ffaa00; box-shadow: 0 0 8px #ffaa00;"></div>
+                    <span>Modified (Git)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background-color: #ff3366; box-shadow: 0 0 8px #ff3366;"></div>
+                    <span>Deleted (Git)</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="network-container"></div>
+
+        <div class="sidebar">
+            <!-- Metrics Section -->
+            <div class="panel-section">
+                <h2>AI Quality Metrics</h2>
+                <div class="metrics-grid">
+                    <div id="card-scr" class="metric-card">
+                        <span class="metric-label">Clone Ratio (SCR)</span>
+                        <span id="val-scr" class="metric-value">0.00%</span>
+                        <span id="detail-scr" class="metric-detail">0/0 cloned</span>
+                    </div>
+                    <div id="card-dcr" class="metric-card">
+                        <span class="metric-label">Dead Code (DCR)</span>
+                        <span id="val-dcr" class="metric-value">0.00%</span>
+                        <span id="detail-dcr" class="metric-detail">0/0 dead</span>
+                    </div>
+                    <div id="card-bvi" class="metric-card">
+                        <span class="metric-label">Layer Violations</span>
+                        <span id="val-bvi" class="metric-value">0</span>
+                        <span id="detail-bvi" class="metric-detail">BVI score</span>
+                    </div>
+                    <div id="card-aoi" class="metric-card">
+                        <span class="metric-label">Abstraction Overkill</span>
+                        <span id="val-aoi" class="metric-value">0.00</span>
+                        <span id="detail-aoi" class="metric-detail">interfaces/concrete</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Inspector Section -->
+            <div class="panel-section" style="flex: 1; display: flex; flex-direction: column;">
+                <h2>Node Inspector</h2>
+                <div id="inspector-empty" class="inspector-placeholder">
+                    Click a node on the graph to inspect details and ask AI for refactoring suggestions.
+                </div>
+                <div id="inspector-content" class="inspector-details" style="display: none;">
+                    <div class="detail-row">
+                        <div class="detail-label">Type</div>
+                        <div><span id="inspect-tag" class="tag">Function</span></div>
+                    </div>
+                    <div class="detail-row">
+                        <div class="detail-label">Name</div>
+                        <div id="inspect-name" class="detail-value">calculateMetrics</div>
+                    </div>
+                    <div id="row-file" class="detail-row">
+                        <div class="detail-label">File Path</div>
+                        <div id="inspect-file" class="detail-value" style="font-family: monospace; font-size: 0.8rem;">internal/report/metrics.go</div>
+                    </div>
+                    
+                    <!-- AI Suggestion Container -->
+                    <div class="explanation-container">
+                        <button id="btn-explain" onclick="requestExplanation()" style="width: 100%; justify-content: center;">
+                            <span>Ask AI to Explain & Optimize</span>
+                        </button>
+                        <div id="explanation-loader" style="display: none; text-align: center; padding: 1rem;">
+                            <span class="loader"></span>
+                            <span style="font-size: 0.85rem; color: var(--text-secondary); margin-left: 0.5rem;">Analyzing code structure...</span>
+                        </div>
+                        <div id="explanation-result" style="display: none;">
+                            <div class="detail-label" style="margin-bottom: 0.25rem;">AI Architect Report</div>
+                            <div id="explanation-text"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        let network = null;
+        let originalNodes = [];
+        let originalEdges = [];
+        let currentNodesDataSet = null;
+        let currentEdgesDataSet = null;
+        let selectedNode = null;
+
+        // Fetch original graph and metrics on load
+        window.addEventListener('load', async () => {
+            await fetchGraph();
+        });
+
+        async function fetchGraph() {
+            try {
+                const response = await fetch('/api/graph');
+                const data = await response.json();
+
+                originalNodes = data.nodes || [];
+                originalEdges = data.edges || [];
+
+                // Render metrics
+                renderMetrics(data.metrics);
+
+                // Build Vis dataset
+                renderNetwork(originalNodes, originalEdges);
+            } catch (err) {
+                console.error("Failed to fetch graph data:", err);
+            }
+        }
+
+        function renderMetrics(metrics) {
+            if (!metrics) return;
+
+            // SCR
+            const scrVal = (metrics.SCR * 100).toFixed(2) + "%";
+            document.getElementById('val-scr').innerText = scrVal;
+            document.getElementById('detail-scr').innerText = `${metrics.ClonedFunctions}/${metrics.TotalFunctions} functions`;
+            const cardScr = document.getElementById('card-scr');
+            cardScr.className = 'metric-card ' + (metrics.SCR > 0.10 ? 'danger' : 'pass');
+
+            // DCR
+            const dcrVal = (metrics.DCR * 100).toFixed(2) + "%";
+            document.getElementById('val-dcr').innerText = dcrVal;
+            document.getElementById('detail-dcr').innerText = `${metrics.DeadFunctions}/${metrics.TotalFunctions} functions`;
+            const cardDcr = document.getElementById('card-dcr');
+            cardDcr.className = 'metric-card ' + (metrics.DCR > 0.05 ? 'danger' : 'pass');
+
+            // BVI
+            document.getElementById('val-bvi').innerText = metrics.BVI;
+            document.getElementById('detail-bvi').innerText = `${metrics.BVI} violations`;
+            const cardBvi = document.getElementById('card-bvi');
+            cardBvi.className = 'metric-card ' + (metrics.BVI > 0 ? 'danger' : 'pass');
+
+            // AOI
+            document.getElementById('val-aoi').innerText = metrics.AOI.toFixed(2);
+            document.getElementById('detail-aoi').innerText = `${metrics.InterfaceCount} intf / ${metrics.ConcreteCount} conc`;
+            const cardAoi = document.getElementById('card-aoi');
+            cardAoi.className = 'metric-card ' + (metrics.AOI > 0.50 ? 'danger' : 'pass');
+        }
+
+        function renderNetwork(nodesList, edgesList) {
+            const container = document.getElementById('network-container');
+
+            const nodes = nodesList.map(n => {
+                let color = '#4b5563'; // File Default
+                let shape = 'box';
+
+                if (n.group === 'Function') {
+                    color = '#8b5cf6';
+                    shape = 'dot';
+                } else if (n.group === 'Class') {
+                    color = '#10b981';
+                    shape = 'diamond';
+                } else if (n.group === 'Variable') {
+                    color = '#f97316';
+                    shape = 'triangle';
+                }
+
+                return {
+                    id: n.id,
+                    label: n.label,
+                    title: n.title || n.label,
+                    group: n.group,
+                    color: {
+                        background: color,
+                        border: '#1e293b',
+                        highlight: {
+                            background: '#a78bfa',
+                            border: '#ffffff'
+                        }
+                    },
+                    shape: shape,
+                    font: { color: '#f3f4f6', size: 12, face: 'Outfit' },
+                    borderWidth: 2,
+                    shadow: true
+                };
+            });
+
+            const edges = edgesList.map(e => {
+                let color = '#374151';
+                let style = { enabled: true, type: 'arrow' };
+                if (e.label === 'CALLS') {
+                    color = '#818cf8';
+                } else if (e.label === 'IMPORTS') {
+                    color = '#f59e0b';
+                } else if (e.label === 'IMPLEMENTS') {
+                    color = '#34d399';
+                }
+                return {
+                    from: e.from,
+                    to: e.to,
+                    arrows: 'to',
+                    color: { color: color, highlight: '#ffffff' },
+                    label: e.label,
+                    font: { size: 9, color: '#9ca3af', face: 'Outfit' },
+                    width: 1.5
+                };
+            });
+
+            currentNodesDataSet = new vis.DataSet(nodes);
+            currentEdgesDataSet = new vis.DataSet(edges);
+
+            const visData = {
+                nodes: currentNodesDataSet,
+                edges: currentEdgesDataSet
+            };
+
+            const options = {
+                physics: {
+                    stabilization: {
+                        iterations: 150,
+                        fit: true
+                    },
+                    barnesHut: {
+                        gravitationalConstant: -3000,
+                        springLength: 95,
+                        springConstant: 0.04
+                    }
+                },
+                interaction: {
+                    hover: true,
+                    tooltipDelay: 200
+                }
+            };
+
+            network = new vis.Network(container, visData, options);
+
+            network.on("selectNode", function (params) {
+                const nodeId = params.nodes[0];
+                const rawNode = nodesList.find(n => n.id === nodeId);
+                if (rawNode) {
+                    showNodeInspector(rawNode);
+                }
+            });
+
+            network.on("deselectNode", function () {
+                hideNodeInspector();
+            });
+        }
+
+        function showNodeInspector(node) {
+            selectedNode = node;
+            document.getElementById('inspector-empty').style.display = 'none';
+            const content = document.getElementById('inspector-content');
+            content.style.display = 'flex';
+
+            // Set tag type
+            const tag = document.getElementById('inspect-tag');
+            tag.innerText = node.group;
+            tag.className = 'tag ' + node.group.toLowerCase();
+
+            // Set Name
+            document.getElementById('inspect-name').innerText = node.label;
+
+            // Set File Path if exists
+            const fileRow = document.getElementById('row-file');
+            // If it's a file node, id itself is the path. Otherwise, look for path in ID or titles
+            let path = "";
+            if (node.group === "File") {
+                path = node.id;
+            } else {
+                // Node IDs are in format filepath:line:col:name
+                const parts = node.id.split(':');
+                if (parts.length > 0) {
+                    path = parts[0];
+                }
+            }
+            if (path) {
+                fileRow.style.display = 'flex';
+                document.getElementById('inspect-file').innerText = path;
+                selectedNode.filePath = path; // store on node object
+            } else {
+                fileRow.style.display = 'none';
+            }
+
+            // Reset AI results panel
+            document.getElementById('explanation-result').style.display = 'none';
+            document.getElementById('explanation-loader').style.display = 'none';
+            document.getElementById('btn-explain').style.display = 'block';
+        }
+
+        function hideNodeInspector() {
+            selectedNode = null;
+            document.getElementById('inspector-empty').style.display = 'block';
+            document.getElementById('inspector-content').style.display = 'none';
+        }
+
+        async function requestExplanation() {
+            if (!selectedNode) return;
+
+            const btn = document.getElementById('btn-explain');
+            const loader = document.getElementById('explanation-loader');
+            const resultPanel = document.getElementById('explanation-result');
+            const resultText = document.getElementById('explanation-text');
+
+            btn.style.display = 'none';
+            loader.style.display = 'block';
+            resultPanel.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/explain', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        node_id: selectedNode.id,
+                        node_name: selectedNode.label,
+                        node_type: selectedNode.group,
+                        file_path: selectedNode.filePath || ""
+                    })
+                });
+
+                const data = await response.json();
+                loader.style.display = 'none';
+
+                if (data.explanation) {
+                    resultText.innerHTML = marked.parse(data.explanation);
+                    resultPanel.style.display = 'block';
+                } else if (data.error) {
+                    resultText.innerText = "Error: " + data.error;
+                    resultPanel.style.display = 'block';
+                }
+            } catch (err) {
+                console.error("AI request failed:", err);
+                loader.style.display = 'none';
+                resultText.innerText = "Request failed: " + err.message;
+                resultPanel.style.display = 'block';
+            }
+        }
+
+        async function runDiff() {
+            const ref = document.getElementById('git-ref').value.trim();
+            if (!ref) {
+                alert("Please enter a valid Git branch or commit reference.");
+                return;
+            }
+
+            const btn = document.getElementById('btn-diff');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = `<span class="loader"></span> Comparing...`;
+            btn.disabled = true;
+
+            try {
+                const response = await fetch(`/api/diff?ref=${encodeURIComponent(ref)}`);
+                const diff = await response.json();
+
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+
+                applyDiffToGraph(diff);
+            } catch (err) {
+                console.error("Failed to compute Git diff:", err);
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+                alert("Git diff computation failed. Please ensure the Git reference exists.");
+            }
+        }
+
+        function applyDiffToGraph(diff) {
+            if (!network || !currentNodesDataSet) return;
+
+            // Reset colors first
+            resetGraphColors();
+
+            // Showing the reset button and diff legend
+            document.getElementById('btn-reset').style.display = 'block';
+            document.getElementById('diff-legend').style.display = 'flex';
+
+            // Mark modified nodes
+            if (diff.modified_nodes && diff.modified_nodes.length > 0) {
+                diff.modified_nodes.forEach(m => {
+                    // Match by name or ID
+                    const node = findNodeInDataSet(m);
+                    if (node) {
+                        currentNodesDataSet.update({
+                            id: node.id,
+                            color: {
+                                background: '#ffaa00',
+                                border: '#ffffff'
+                            },
+                            shadow: {
+                                enabled: true,
+                                color: '#ffaa00',
+                                size: 10
+                            }
+                        });
+                    }
+                });
+            }
+
+            // Mark added nodes
+            if (diff.added_nodes && diff.added_nodes.length > 0) {
+                diff.added_nodes.forEach(a => {
+                    const node = findNodeInDataSet(a);
+                    if (node) {
+                        currentNodesDataSet.update({
+                            id: node.id,
+                            color: {
+                                background: '#00ff88',
+                                border: '#ffffff'
+                            },
+                            shadow: {
+                                enabled: true,
+                                color: '#00ff88',
+                                size: 10
+                            }
+                        });
+                    }
+                });
+            }
+
+            // Add ghost deleted nodes temporarily if wanted
+            if (diff.deleted_nodes && diff.deleted_nodes.length > 0) {
+                diff.deleted_nodes.forEach(d => {
+                    const ghostId = `ghost-${d.id}`;
+                    if (!currentNodesDataSet.get(ghostId)) {
+                        currentNodesDataSet.add({
+                            id: ghostId,
+                            label: `[Del] ${d.name}`,
+                            group: d.type,
+                            color: {
+                                background: '#ff3366',
+                                border: '#ffffff'
+                            },
+                            shape: 'box',
+                            shadow: {
+                                enabled: true,
+                                color: '#ff3366',
+                                size: 10
+                            },
+                            font: { color: '#ffffff', size: 11, face: 'Outfit' }
+                        });
+                    }
+                });
+            }
+        }
+
+        function findNodeInDataSet(diffNode) {
+            // Check direct matching by ID (stable ID or db ID)
+            if (currentNodesDataSet.get(diffNode.id)) {
+                return currentNodesDataSet.get(diffNode.id);
+            }
+
+            // Match by name + group (helpful if stable ID has slight formatting mismatch)
+            const allNodes = currentNodesDataSet.get();
+            const matched = allNodes.find(n => n.label === diffNode.name && n.group === diffNode.type);
+            return matched;
+        }
+
+        function resetGraphColors() {
+            if (!currentNodesDataSet) return;
+
+            // Remove ghost nodes
+            const allNodes = currentNodesDataSet.get();
+            allNodes.forEach(n => {
+                if (n.id.toString().startsWith('ghost-')) {
+                    currentNodesDataSet.remove(n.id);
+                }
+            });
+
+            // Restore original colors
+            originalNodes.forEach(n => {
+                let color = '#4b5563'; // File Default
+                let shape = 'box';
+
+                if (n.group === 'Function') {
+                    color = '#8b5cf6';
+                    shape = 'dot';
+                } else if (n.group === 'Class') {
+                    color = '#10b981';
+                    shape = 'diamond';
+                } else if (n.group === 'Variable') {
+                    color = '#f97316';
+                    shape = 'triangle';
+                }
+
+                currentNodesDataSet.update({
+                    id: n.id,
+                    color: {
+                        background: color,
+                        border: '#1e293b',
+                        highlight: {
+                            background: '#a78bfa',
+                            border: '#ffffff'
+                        }
+                    },
+                    shape: shape,
+                    shadow: true
+                });
+            });
+        }
+
+        function resetGraph() {
+            resetGraphColors();
+            document.getElementById('btn-reset').style.display = 'none';
+            document.getElementById('diff-legend').style.display = 'none';
+            document.getElementById('git-ref').value = "";
+        }
+    </script>
+</body>
+</html>

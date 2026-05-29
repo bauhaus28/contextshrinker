@@ -27,6 +27,7 @@ type Indexer struct {
 	FunctionsByFile map[string][]db.FunctionEntity
 	FunctionsMu     sync.RWMutex
 	logMu           sync.Mutex
+	workspaceFiles  []string
 }
 
 func NewIndexer(workspaceRoot string, database *db.Database, ignoreList *ignore.IgnoreList, lspManager *lsp.LSPManager) *Indexer {
@@ -83,6 +84,8 @@ func (idx *Indexer) IngestWorkspace() error {
 	if err != nil {
 		return err
 	}
+
+	idx.workspaceFiles = files
 
 	// Pass 1: Tree-sitter scan
 	log.Printf("Pass 1: Syntax parsing %d files...", len(files))
@@ -201,7 +204,7 @@ func (idx *Indexer) runPass1(filePath string) error {
 	}
 
 	// Extract and record IMPORTS
-	idx.extractAndRecordImports(filePath)
+	idx.extractAndRecordImports(res.Imports)
 
 	return nil
 }
@@ -286,8 +289,86 @@ func (idx *Indexer) findClassIDByName(name string) string {
 	return res
 }
 
-// extractAndRecordImports is not yet implemented; IMPORTS edges are not populated.
-func (idx *Indexer) extractAndRecordImports(_ string) {}
+func (idx *Indexer) extractAndRecordImports(imports []parser.ImportDecl) {
+	for _, imp := range imports {
+		targets := idx.resolveImportTarget(imp.SourcePath, imp.Path)
+		for _, target := range targets {
+			if target != imp.SourcePath {
+				_ = idx.Database.CreateImportsFileToFile(imp.SourcePath, target)
+			}
+		}
+	}
+}
+
+func (idx *Indexer) resolveImportTarget(sourceFile, importPath string) []string {
+	importPath = filepath.ToSlash(importPath)
+	var targets []string
+
+	// 1. Relative imports
+	if strings.HasPrefix(importPath, ".") {
+		absDir := filepath.Join(filepath.Dir(sourceFile), importPath)
+		extensions := []string{".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".java"}
+		for _, ext := range extensions {
+			testPath := absDir + ext
+			if _, err := os.Stat(testPath); err == nil {
+				targets = append(targets, testPath)
+				return targets
+			}
+		}
+		if info, err := os.Stat(absDir); err == nil && info.IsDir() {
+			for _, f := range idx.workspaceFiles {
+				if strings.HasPrefix(f, absDir) {
+					targets = append(targets, f)
+				}
+			}
+			return targets
+		}
+	}
+
+	// 2. Absolute/Package imports
+	segments := strings.FieldsFunc(importPath, func(r rune) bool {
+		return r == '.' || r == '/'
+	})
+	if len(segments) == 0 {
+		return nil
+	}
+
+	for _, f := range idx.workspaceFiles {
+		rel, err := filepath.Rel(idx.WorkspaceRoot, f)
+		if err == nil {
+			if matchImportToWorkspaceFile(rel, segments) {
+				targets = append(targets, f)
+			}
+		}
+	}
+
+	return targets
+}
+
+func matchImportToWorkspaceFile(relPath string, segments []string) bool {
+	relPath = filepath.ToSlash(relPath)
+	fileSegs := strings.Split(relPath, "/")
+	if len(fileSegs) == 0 {
+		return false
+	}
+
+	lastSeg := fileSegs[len(fileSegs)-1]
+	ext := filepath.Ext(lastSeg)
+	lastSegNoExt := strings.TrimSuffix(lastSeg, ext)
+	fileSegs[len(fileSegs)-1] = lastSegNoExt
+
+	if len(fileSegs) > 1 {
+		parentDir := strings.Join(fileSegs[:len(fileSegs)-1], "/")
+		if strings.Contains(strings.Join(segments, "/"), parentDir) {
+			return true
+		}
+	} else {
+		if len(segments) > 0 && segments[len(segments)-1] == lastSegNoExt {
+			return true
+		}
+	}
+	return false
+}
 
 func (idx *Indexer) findFunctionAtLine(filePath string, line int64) string {
 	idx.FunctionsMu.RLock()
